@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Linux DO · 企业微信 IM 外观
 // @namespace    https://linux.do/
-// @version      0.3.2
+// @version      0.4.2
 // @description  将 Linux DO 换成企业微信 5.x 桌面端风格；保留原站数据、路由、通知与回复交互。
 // @author       Richy
 // @match        https://linux.do/*
@@ -20,6 +20,8 @@
   const ROOT_CLASS = "wecom-im-theme";
   const LOCK_CLASS = "wecom-locked"; // 仅三栏路由挂载：隐藏原生主内容
   const VIEW_KEY = "linuxdo-wecom-view"; // "im" | "native"
+  const LAST_READ_KEY = "linuxdo-wecom-last-read";
+  const LAST_READ_MAX_TOPICS = 200;
 
   const RAIL_WIDTH = 162; // 企业微信 5.x 展开导航
   const NAV2_WIDTH = 240; // 展开栏（原生侧栏原样搬入，默认收起）
@@ -33,6 +35,26 @@
   const WATERMARK_MAX_LENGTH = 48;
   const WATERMARK_TILE_WIDTH = 300;
   const WATERMARK_TILE_HEIGHT = 160;
+  const AVATAR_SOURCE_SIZE = 96;
+  const COMPOSER_READY_TIMEOUT_MS = 5000;
+  const COMPOSER_SUBMIT_TIMEOUT_MS = 20000;
+  const COMPOSER_INPUT_SETTLE_MS = 80;
+  const COMPOSER_POLL_INTERVAL_MS = 50;
+  const COMPOSER_STATUS_DURATION_MS = 3200;
+  const POST_SYNC_RETRY_DELAYS_MS = [0, 240, 900];
+  const POST_SYNC_BATCH_SIZE = 20;
+  const NATIVE_COMPOSER_TEXTAREA = "#reply-control textarea.d-editor-input, #reply-control textarea";
+  const NATIVE_COMPOSER_SUBMIT = [
+    "#reply-control .save-or-cancel button.create",
+    "#reply-control .save-or-cancel button.btn-primary",
+    "#reply-control button.create.btn-primary"
+  ].join(", ");
+  const NATIVE_COMPOSER_ERROR = [
+    "#reply-control .alert-error",
+    "#reply-control .composer-error",
+    "#reply-control .validation-error",
+    "#reply-control .popup-tip.bad"
+  ].join(", ");
 
   const AVATAR_COLORS = [
     "#267EF0", "#07C160", "#5B8FF9", "#8B6CFF",
@@ -246,8 +268,9 @@
 
   function fullAvatarUrl(template) {
     if (!template) return "";
-    const url = template.replace("{size}", "96");
-    return url.startsWith("http") ? url : location.origin + url;
+    const url = template.replace("{size}", String(AVATAR_SOURCE_SIZE));
+    if (/^(?:data:|blob:|https?:)/i.test(url)) return url;
+    return new URL(url, location.origin).href;
   }
 
   function formatTime(iso) {
@@ -273,124 +296,209 @@
     return `${date.getMonth() + 1}月${date.getDate()}日 ${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
   }
 
-  async function api(path) {
+  async function api(path, options = {}) {
     const resp = await fetch(path, {
       headers: { Accept: "application/json" },
-      credentials: "same-origin"
+      credentials: "same-origin",
+      ...options
     });
     if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
     return resp.json();
   }
 
   let cachedUsername = null;
+  let cachedUserId = null;
 
   function normalizeUsername(name) {
-    return (name || "").trim().replace(/^@/, "").toLowerCase();
+    return String(name ?? "").trim().replace(/^@/, "").toLowerCase();
+  }
+
+  function normalizeUserId(value) {
+    const id = String(value ?? "").trim();
+    return id ? id.toLowerCase() : "";
   }
 
   function extractUsernameFromHref(href) {
     if (!href) return null;
     try {
-      const path = href.startsWith("http") ? new URL(href, location.origin).pathname : href;
-      const m = path.match(/^\/u\/([^/?#]+)/i);
-      return m ? decodeURIComponent(m[1]) : null;
+      const path = new URL(href, location.origin).pathname;
+      const match = path.match(/^\/u\/([^/?#]+)/i);
+      return match ? decodeURIComponent(match[1]) : null;
     } catch {
       return null;
     }
   }
 
-  function readPreloadedCurrentUser() {
+  function parseUserCard(value) {
+    const raw = String(value ?? "").trim();
+    if (!raw) return null;
     try {
-      const el = document.getElementById("data-preloaded");
-      if (!el) return null;
-      const raw = el.getAttribute("data-preloaded") || el.textContent;
+      const parsed = JSON.parse(raw);
+      return parsed && typeof parsed === "object" ? parsed : { username: raw };
+    } catch {
+      return { username: raw };
+    }
+  }
+
+  function usernameFromElement(element) {
+    if (!element) return null;
+    const fromHref = extractUsernameFromHref(element.getAttribute("href") || "");
+    if (fromHref) return fromHref;
+    const card = parseUserCard(element.getAttribute("data-user-card"));
+    const name = card?.username || card?.user?.username ||
+      element.getAttribute("data-username") || element.getAttribute("data-user-name");
+    return name ? String(name).trim() : null;
+  }
+
+  function userIdFromElement(element) {
+    if (!element) return "";
+    for (const attr of ["data-user-id", "data-user-id-value", "data-id"]) {
+      const value = normalizeUserId(element.getAttribute(attr));
+      if (value) return value;
+    }
+    return "";
+  }
+
+  function preloadedCurrentUser() {
+    try {
+      const element = document.getElementById("data-preloaded");
+      const raw = element?.getAttribute("data-preloaded") || element?.textContent;
       if (!raw) return null;
       const data = JSON.parse(raw);
       const candidates = [data.currentUser, data.current_user];
       for (const key of Object.keys(data || {})) {
         if (/current.?user/i.test(key)) candidates.push(data[key]);
       }
-      for (const c of candidates) {
-        if (!c) continue;
-        const parsed = typeof c === "string" ? JSON.parse(c) : c;
-        const name = parsed && (parsed.username || parsed.user?.username);
-        if (name) return name;
+      for (const candidate of candidates) {
+        const record = typeof candidate === "string" ? parseUserCard(candidate) : candidate;
+        if (record?.username || record?.user?.username || record?.id) return record;
       }
-    } catch { /* ignore */ }
+    } catch { /* 页面尚未完成预加载时稍后重试 */ }
     return null;
   }
 
-  function getCurrentUsername() {
-    if (cachedUsername) return cachedUsername;
+  function rememberCurrentUser(record) {
+    const username = record?.username || record?.user?.username;
+    const id = record?.id ?? record?.user?.id;
+    if (username) cachedUsername = String(username).trim();
+    if (id != null && String(id).trim()) cachedUserId = normalizeUserId(id);
+  }
+
+  function getCurrentUserIdentity() {
+    if (cachedUsername || cachedUserId) return { username: cachedUsername, id: cachedUserId };
+    const selectors = [
+      "#current-user",
+      ".header-dropdown-toggle.current-user",
+      ".current-user",
+      "button.icon.btn-flat[data-user-card]"
+    ];
+    for (const selector of selectors) {
+      const root = document.querySelector(selector);
+      if (!root) continue;
+      const elements = [root, ...root.querySelectorAll("a[href*='/u/'], [data-user-card], [data-username]")];
+      let found = false;
+      for (const element of elements) {
+        const username = usernameFromElement(element);
+        const id = userIdFromElement(element);
+        if (username || id) {
+          rememberCurrentUser({ username, id });
+          found = true;
+        }
+      }
+      if (found) return { username: cachedUsername, id: cachedUserId };
+    }
+    const image = document.querySelector("#current-user img[alt], .current-user img[alt]");
+    if (image?.alt && !/avatar|头像/i.test(image.alt)) {
+      rememberCurrentUser({ username: image.alt.trim() });
+      return { username: cachedUsername, id: cachedUserId };
+    }
+    const preloaded = preloadedCurrentUser();
+    if (preloaded) {
+      rememberCurrentUser(preloaded);
+      return { username: cachedUsername, id: cachedUserId };
+    }
     try {
-      const selectors = [
-        "#current-user a[href*='/u/']",
-        "#current-user button[data-user-card]",
-        "#current-user [data-user-card]",
-        "button.icon.btn-flat[data-user-card]",
-        ".header-dropdown-toggle.current-user a[href*='/u/']",
-        ".current-user a[href*='/u/']"
-      ];
-      for (const sel of selectors) {
-        const el = document.querySelector(sel);
-        if (!el) continue;
-        const fromHref = extractUsernameFromHref(el.getAttribute("href") || "");
-        if (fromHref) {
-          cachedUsername = fromHref;
-          return cachedUsername;
-        }
-        const card = el.getAttribute("data-user-card");
-        if (card) {
-          cachedUsername = card;
-          return cachedUsername;
-        }
-      }
+      const owner = window.Discourse?.__container__ ||
+        document.querySelector(".ember-application")?.__ember_meta__?.owner;
+      const user = owner?.lookup?.("service:current-user") || window.Discourse?.User?.current?.();
+      const record = { username: user?.username || user?.get?.("username"), id: user?.id || user?.get?.("id") };
+      if (record.username || record.id) rememberCurrentUser(record);
+    } catch { /* Ember 尚未就绪时由下一次调用重试 */ }
+    return { username: cachedUsername, id: cachedUserId };
+  }
 
-      const img = document.querySelector("#current-user img[alt], .current-user img[alt]");
-      if (img && img.alt && !/avatar|头像/i.test(img.alt)) {
-        cachedUsername = img.alt.trim();
-        return cachedUsername;
-      }
+  function getCurrentUsername() {
+    return getCurrentUserIdentity().username;
+  }
 
-      const preloaded = readPreloadedCurrentUser();
-      if (preloaded) {
-        cachedUsername = preloaded;
-        return cachedUsername;
-      }
+  function booleanFlag(value) {
+    return value === true || value === 1 || value === "1" ||
+      (typeof value === "string" && value.trim().toLowerCase() === "true");
+  }
 
-      // Ember 容器兜底
-      try {
-        const owner =
-          window.Discourse?.__container__ ||
-          document.querySelector(".ember-application")?.__ember_meta__?.owner;
-        const user = owner?.lookup?.("service:current-user") ||
-          window.Discourse?.User?.current?.();
-        const name = user?.username || user?.get?.("username");
-        if (name) {
-          cachedUsername = name;
-          return cachedUsername;
-        }
-      } catch { /* ignore */ }
-    } catch { /* ignore */ }
-    return null;
+  function postUsername(post) {
+    return post?.username || post?.user?.username || post?.author?.username || "";
+  }
+
+  function postUserId(post) {
+    return post?.user_id ?? post?.author_id ?? post?.user?.id ?? post?.author?.id ?? "";
   }
 
   function isMyPost(post, myName) {
     if (!post) return false;
-    if (post.yours === true || post.yours === "true") return true;
-    if (post.mine === true || post.is_my_post === true) return true;
-    const me = normalizeUsername(myName || getCurrentUsername());
-    if (!me) return false;
-    return normalizeUsername(post.username) === me;
+    if (booleanFlag(post.yours) || booleanFlag(post.mine) || booleanFlag(post.is_my_post)) return true;
+    const identity = getCurrentUserIdentity();
+    const myId = normalizeUserId(identity.id);
+    const postId = normalizeUserId(postUserId(post));
+    if (myId && postId && myId === postId) return true;
+    const me = normalizeUsername(myName || identity.username);
+    const author = normalizeUsername(postUsername(post));
+    return Boolean(me && author && me === author);
   }
 
   function isTopicPath(pathname) {
     return /^\/t\//.test(pathname);
   }
 
+  /** /t/:slug/:id(/:post) 或 /t/:id(/:post) */
+  function topicRouteFromPath(pathname) {
+    const parts = String(pathname || "").split("/").filter(Boolean);
+    if (parts[0] !== "t" || parts.length < 2) return { topicId: null, postNumber: 0, slug: "" };
+    const postOf = (value) => (/^\d+$/.test(value || "") ? Number(value) : 0);
+    if (/^\d+$/.test(parts[1])) {
+      return { topicId: Number(parts[1]), postNumber: postOf(parts[2]), slug: "" };
+    }
+    if (/^\d+$/.test(parts[2] || "")) {
+      return { topicId: Number(parts[2]), postNumber: postOf(parts[3]), slug: parts[1] };
+    }
+    return { topicId: null, postNumber: 0, slug: parts[1] || "" };
+  }
+
   function topicIdFromPath(pathname) {
-    const m = pathname.match(/^\/t\/(?:[\w-]+\/)?(\d+)/);
-    return m ? Number(m[1]) : null;
+    return topicRouteFromPath(pathname).topicId;
+  }
+
+  function postNumberFromPath(pathname) {
+    return topicRouteFromPath(pathname).postNumber;
+  }
+
+  function readLastReadMap() {
+    try {
+      const parsed = JSON.parse(localStorage.getItem(LAST_READ_KEY) || "{}");
+      return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
+    } catch {
+      return {};
+    }
+  }
+
+  function getRememberedPost(topicId) {
+    const n = Number(readLastReadMap()[topicId]) || 0;
+    return n > 0 ? n : 0;
+  }
+
+  function rememberedPostForTopic(topic) {
+    if (!topic) return 0;
+    return getRememberedPost(topic.id) || Number(topic.last_read_post_number) || 0;
   }
 
   function isHomePath(pathname) {
@@ -974,6 +1082,16 @@
       display: flex; align-items: center; justify-content: center;
       color: #fff; font-size: 15px; font-weight: 600;
     }
+    /* 头像模板返回的图片通常是 96px；必须约束到头像框，否则会按原始尺寸溢出并被裁成放大的局部。 */
+    .wecom-conv-avatar img,
+    .wecom-chat-avatar img {
+      display: block;
+      width: 100%;
+      height: 100%;
+      max-width: 100%;
+      max-height: 100%;
+      object-fit: cover;
+    }
     /* 伪装文字头像：保持圆形；实心 / 空心；字数 3～5 */
     .wecom-conv-avatar.is-text-avatar {
       box-sizing: border-box;
@@ -1222,7 +1340,7 @@
     }
     .wecom-composer-tools .wecom-icon-btn { position: relative; }
 
-    /* ---------- 输入区：点击打开原生编辑器 ---------- */
+    /* ---------- 输入区：企微外观，内容同步给后台原生 composer ---------- */
     .wecom-chat-compose {
       position: relative;
       z-index: 430;
@@ -1236,7 +1354,7 @@
       color: var(--wc-text-4);
       display: flex; align-items: flex-start; gap: 8px;
       padding: 10px 14px 4px;
-      cursor: pointer;
+      cursor: text;
       font-size: 14px;
       font-family: var(--wc-font);
       transition: color 0.15s;
@@ -1244,13 +1362,13 @@
       width: 100%;
       text-align: left;
     }
-    .wecom-chat-compose:hover { color: var(--wc-accent); }
+    .wecom-chat-compose:hover { color: var(--wc-text-1); }
     .wecom-chat-compose.busy { color: var(--wc-accent); }
     .wecom-chat-compose.error { color: var(--wc-danger); }
     .wecom-chat-compose svg { width: 16px; height: 16px; flex-shrink: 0; }
     .wecom-chat-panel[data-empty="1"] .wecom-composer { display: none; }
 
-    /* 锁定态：原生主区不要抢走点击；关闭态 composer 直接隐藏 */
+    /* 锁定态：原生主区不要抢走点击；原生 composer 仅作为后台提交引擎 */
     .${ROOT_CLASS}.${LOCK_CLASS} #main-outlet-wrapper,
     .${ROOT_CLASS}.${LOCK_CLASS} #main-outlet {
       pointer-events: none !important;
@@ -1264,20 +1382,19 @@
     .${ROOT_CLASS}.${LOCK_CLASS} #reply-control.edit-title,
     .${ROOT_CLASS}.${LOCK_CLASS} #reply-control.fullscreen {
       display: block !important;
-      left: calc(var(--wc-nav) + var(--wc-nav2w) + var(--wc-strip) + var(--wc-list)) !important;
-      right: 0 !important;
-      width: auto !important;
-      max-width: none !important;
-      z-index: 600 !important;
-      visibility: visible !important;
-      pointer-events: auto !important;
-      border-radius: 12px 12px 0 0 !important;
-      box-shadow: 0 -8px 28px rgba(0,0,0,0.12) !important;
-    }
-    .${ROOT_CLASS}.${LOCK_CLASS} #reply-control .reply-area {
-      max-width: none !important;
-      padding-left: 20px !important;
-      padding-right: 20px !important;
+      position: fixed !important;
+      inset: 0 auto auto -10000px !important;
+      width: 2px !important;
+      min-width: 0 !important;
+      max-width: 2px !important;
+      height: 2px !important;
+      min-height: 0 !important;
+      max-height: 2px !important;
+      overflow: hidden !important;
+      opacity: 0 !important;
+      clip-path: inset(50%) !important;
+      pointer-events: none !important;
+      box-shadow: none !important;
     }
 
     /* ---------- native 模式悬浮恢复钮 ---------- */
@@ -1382,7 +1499,6 @@
       .${ROOT_CLASS}.${LOCK_CLASS}.wecom-topic-open .wecom-list-panel { display: none; }
       .${ROOT_CLASS}.${LOCK_CLASS}:not(.wecom-topic-open) .wecom-chat-panel { display: none; }
       .${ROOT_CLASS}.${LOCK_CLASS} .wecom-chat-panel { left: var(--wc-nav); }
-      .${ROOT_CLASS}.${LOCK_CLASS} #reply-control { left: calc(var(--wc-nav) + 12px) !important; right: 12px !important; }
       .wecom-image-viewer-stage { inset: 68px 12px 44px; }
       .wecom-image-viewer-close { top: 14px; right: 14px; }
     }
@@ -1756,9 +1872,6 @@
     }
     @media (max-width: 1000px) {
       .${ROOT_CLASS}.${LOCK_CLASS} .wecom-chat-panel { left: var(--wc-nav); }
-      .${ROOT_CLASS}.${LOCK_CLASS} #reply-control {
-        left: calc(var(--wc-nav) + 10px) !important;
-      }
     }
   `;
 
@@ -2220,15 +2333,90 @@
     }
     .wecom-composer-card {
       min-height: 160px;
+      position: relative;
       border: 1px solid #D6DEE8;
       border-radius: 8px;
       background: #FFFFFF;
       box-shadow: 0 1px 2px rgba(34,55,80,.03);
+      cursor: text;
     }
     .wecom-composer-card:hover { border: 1px solid #B8D0EF; box-shadow: none; }
     .wecom-composer-tools { padding: 9px 10px 1px; }
-    .wecom-chat-compose { min-height: 92px; padding: 8px 12px; }
-    .wecom-send-btn { margin-right: 6px; color: #A8B0BC; background: transparent; border: 0; }
+    textarea.wecom-chat-compose {
+      order: 3;
+      display: block;
+      box-sizing: border-box;
+      min-height: 96px;
+      max-height: 180px;
+      padding: 8px 12px 12px;
+      resize: none;
+      overflow-y: auto;
+      outline: 0;
+      color: #1F2D3D;
+      line-height: 1.55;
+      cursor: text;
+    }
+    textarea.wecom-chat-compose::placeholder { color: #A8B0BC; opacity: 1; }
+    textarea.wecom-chat-compose:focus { color: #1F2D3D; }
+    .wecom-compose-status {
+      min-width: 0;
+      margin-left: 6px;
+      overflow: hidden;
+      color: #8795A8;
+      font-size: 11px;
+      white-space: nowrap;
+      text-overflow: ellipsis;
+    }
+    .wecom-compose-status.busy { color: #4389F5; }
+    .wecom-compose-status.error { color: #E45C5C; }
+    .wecom-compose-status.success { color: #31A05D; }
+    .wecom-reply-target {
+      order: 2;
+      min-height: 26px;
+      margin: 4px 12px 0;
+      padding: 4px 8px;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      border-left: 2px solid #4389F5;
+      background: #F3F7FC;
+      color: #65758A;
+      font-size: 11px;
+    }
+    .wecom-reply-target[hidden] { display: none !important; }
+    .wecom-reply-target span { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+    .wecom-reply-cancel {
+      margin-left: auto;
+      padding: 0 2px;
+      border: 0;
+      background: transparent;
+      color: #8795A8;
+      cursor: pointer;
+    }
+    .wecom-send-btn {
+      margin: 0 4px 0 8px;
+      align-self: center;
+      color: #A8B0BC;
+      background: transparent;
+      border: 0;
+      cursor: default;
+    }
+    .wecom-send-btn:not(:disabled) { color: #4389F5; cursor: pointer; }
+    .wecom-send-btn:not(:disabled):hover { background: #EEF5FF; }
+
+    /* 最终兜底：后续响应式规则也不能把后台原生编辑器带回屏幕。 */
+    .${ROOT_CLASS}.${LOCK_CLASS} #reply-control.open,
+    .${ROOT_CLASS}.${LOCK_CLASS} #reply-control.edit-title,
+    .${ROOT_CLASS}.${LOCK_CLASS} #reply-control.fullscreen {
+      inset: 0 auto auto -10000px !important;
+      right: auto !important;
+      width: 2px !important;
+      height: 2px !important;
+      opacity: 0 !important;
+      visibility: hidden !important;
+      clip-path: inset(50%) !important;
+      pointer-events: none !important;
+    }
 
     /* 右侧群成员栏 */
     .wecom-member-panel {
@@ -2278,16 +2466,9 @@
     .wecom-member-avatar img { width: 100%; height: 100%; object-fit: cover; }
     .wecom-member-name { min-width: 0; overflow: hidden; color: #25364B; font-size: 11px; white-space: nowrap; text-overflow: ellipsis; }
     .wecom-member-role { margin-left: auto; padding: 1px 4px; border-radius: 3px; background: #EEF2F7; color: #8C98A8; font-size: 9px; }
-    .${ROOT_CLASS}.wecom-members-open #reply-control.open,
-    .${ROOT_CLASS}.wecom-members-open #reply-control.edit-title,
-    .${ROOT_CLASS}.wecom-members-open #reply-control.fullscreen { right: var(--wc-members) !important; }
-
     @media (max-width: 1100px) {
       .wecom-member-panel { display: none; }
       .${ROOT_CLASS}.wecom-members-open .wecom-chat-panel { right: 0; }
-      .${ROOT_CLASS}.wecom-members-open #reply-control.open,
-      .${ROOT_CLASS}.wecom-members-open #reply-control.edit-title,
-      .${ROOT_CLASS}.wecom-members-open #reply-control.fullscreen { right: 0 !important; }
     }
     @media (max-width: 1000px) {
       .${ROOT_CLASS} { --wc-nav: 68px !important; }
@@ -3557,7 +3738,10 @@
   }
 
   function topicHref(topic) {
-    return `/t/${topic.slug || "topic"}/${topic.id}`;
+    const slug = topic.slug || "topic";
+    const lastRead = rememberedPostForTopic(topic);
+    if (lastRead > 1) return `/t/${slug}/${topic.id}/${lastRead}`;
+    return `/t/${slug}/${topic.id}`;
   }
 
   function convAvatarHtml(topic, usersById) {
@@ -3735,6 +3919,7 @@
 
   const chatState = {
     topicId: null,
+    slug: "",
     loading: false,
     stream: [],        // 全部 post id 顺序
     renderedFirstIdx: 0, // stream 中已渲染的起始下标
@@ -3742,7 +3927,23 @@
     renderedLastNumber: 0, // 已渲染的最大 post_number
     hasOlder: false,
     hasNewer: false,
-    title: ""
+    title: "",
+    replyTotal: 0,
+    pinnedPost: 0,
+    pinningScroll: false
+  };
+
+  let suppressHistoryApply = false;
+
+  const composerBridgeState = {
+    topicId: null,
+    nativeTopicId: null,
+    nativeReplyToPostNumber: null,
+    replyToPostNumber: null,
+    connecting: null,
+    connectionSerial: 0,
+    submitting: false,
+    drafts: new Map()
   };
 
   function normalizeWatermarkText(value) {
@@ -4049,8 +4250,9 @@
       <div class="wecom-chat-body"></div>
       <div class="wecom-composer">
         <div class="wecom-composer-card">
-          <button type="button" class="wecom-chat-compose" data-wecom-compose="1"><span>点击回复，打开原生编辑器…</span></button>
-          <div class="wecom-composer-tools">${toolsHtml}<div class="spacer"></div><button type="button" class="wecom-send-btn" tabindex="-1" aria-hidden="true">发送</button></div>
+          <div class="wecom-composer-tools">${toolsHtml}<span class="wecom-compose-status" aria-live="polite"></span><div class="spacer"></div><button type="button" class="wecom-send-btn" disabled>发送</button></div>
+          <div class="wecom-reply-target" hidden><span></span><button type="button" class="wecom-reply-cancel" aria-label="取消指定回复">×</button></div>
+          <textarea class="wecom-chat-compose" data-wecom-compose="1" rows="3" aria-label="消息" placeholder="发送消息"></textarea>
         </div>
       </div>
     `;
@@ -4135,18 +4337,18 @@
   }
 
   function wireComposeButton(panel) {
-    const btn = panel.querySelector(".wecom-chat-compose");
-    if (!btn || btn.dataset.wired === "1") return;
-    btn.dataset.wired = "1";
-    // 直接绑定 + 捕获阶段，避免被其它监听吞掉
-    const handler = (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      if (typeof e.stopImmediatePropagation === "function") e.stopImmediatePropagation();
-      openNativeComposer();
-    };
-    btn.addEventListener("click", handler, true);
-    btn.addEventListener("pointerup", handler, true);
+    const input = panel.querySelector(".wecom-chat-compose");
+    if (!input || input.dataset.wired === "1") return;
+    input.dataset.wired = "1";
+    input.addEventListener("focus", connectComposerFromUi);
+    input.addEventListener("input", () => handleComposerInput(input));
+    input.addEventListener("keydown", handleComposerKeydown);
+    panel.querySelector(".wecom-send-btn")?.addEventListener("click", submitComposerFromUi);
+    panel.querySelector(".wecom-reply-cancel")?.addEventListener("click", cancelTargetedReply);
+    panel.querySelectorAll(".wecom-composer-tools .wecom-icon-btn").forEach((button) => {
+      button.addEventListener("click", () => input.focus());
+    });
+    updateComposeSendState();
   }
 
   function bindChatPanelEvents(panel) {
@@ -4159,21 +4361,12 @@
         return;
       }
       if (e.target.closest(".wecom-chat-refresh")) {
-        if (chatState.topicId) {
-          chatState.topicId = null;
-          loadTopic(topicIdFromPath(location.pathname));
-        }
+        if (chatState.topicId) loadTopic(chatState.topicId, true);
         return;
       }
       if (e.target.closest(".wecom-chat-native")) {
         setViewMode("native");
         location.reload();
-        return;
-      }
-      if (e.target.closest(".wecom-composer-card")) {
-        e.preventDefault();
-        e.stopPropagation();
-        openNativeComposer();
         return;
       }
       // 聊天头分类 chip：站内软跳转
@@ -4204,15 +4397,22 @@
       openImageViewer(event.target);
     });
     panel.querySelector(".wecom-chat-body").addEventListener("scroll", () => {
+      if (chatState.pinningScroll) return;
+      chatState.pinnedPost = 0;
       const body = panel.querySelector(".wecom-chat-body");
       if (body.scrollTop < 80) loadOlderPosts();
       if (body.scrollTop + body.clientHeight >= body.scrollHeight - 120) loadNewerPosts();
+      trackVisibleTopicPost();
     });
   }
 
   function renderChatEmpty() {
     ensureChatPanel();
     chatState.topicId = null;
+    chatState.slug = "";
+    chatState.replyTotal = 0;
+    chatState.pinnedPost = 0;
+    switchComposerTopic(null);
     const panel = document.querySelector(".wecom-chat-panel");
     if (panel) panel.dataset.empty = "1";
     const body = document.querySelector(".wecom-chat-body");
@@ -4403,99 +4603,294 @@
     return null;
   }
 
+  function getOpenComposerModel() {
+    const owner = getEmberOwner();
+    const composer = owner ? getComposerService(owner) : null;
+    if (!composer) return null;
+    return composer.model || composer.get?.("model") || null;
+  }
+
+  function retargetOpenNativeComposer(postNumber) {
+    const model = getOpenComposerModel();
+    if (!model) return false;
+    const requestedPost = Number(postNumber) || null;
+    const topic = getTopicModel(getEmberOwner());
+    const post = requestedPost ? findLoadedPost(topic, requestedPost) : null;
+    if (requestedPost && !post) {
+      throw new Error(`目标楼层 #${requestedPost} 尚未载入原生帖子流`);
+    }
+    if (typeof model.set === "function") model.set("post", post);
+    else model.post = post;
+    if (!requestedPost && typeof model.setReplyTo === "function") {
+      model.setReplyTo(null, null);
+    }
+    return true;
+  }
+
   function isComposerOpen() {
     const el = document.querySelector("#reply-control");
     return !!(el && (el.classList.contains("open") || el.classList.contains("fullscreen") || el.classList.contains("edit-title")));
   }
 
-  function flashComposeHint(message, kind) {
-    const btn = document.querySelector(".wecom-chat-compose");
-    const bar = btn?.querySelector("span");
-    if (!btn || !bar) return;
-    const prev = btn.dataset.defaultLabel || bar.textContent || "点击回复，打开原生编辑器…";
-    btn.dataset.defaultLabel = prev;
-    bar.textContent = message;
-    btn.classList.remove("busy", "error");
-    if (kind) btn.classList.add(kind);
-    clearTimeout(flashComposeHint._timer);
-    flashComposeHint._timer = setTimeout(() => {
-      bar.textContent = btn.dataset.defaultLabel || "点击回复，打开原生编辑器…";
-      btn.classList.remove("busy", "error");
-    }, 3200);
+  function composeUi() {
+    return {
+      input: document.querySelector("textarea.wecom-chat-compose"),
+      send: document.querySelector(".wecom-send-btn"),
+      status: document.querySelector(".wecom-compose-status"),
+      target: document.querySelector(".wecom-reply-target")
+    };
   }
 
-  /** 临时让原生回复按钮可被程序点击（它们在 height:0 的 outlet 里） */
-  function withClickableNativeReplyControls(fn) {
-    let style = document.getElementById("wecom-temp-reply-click");
-    if (!style) {
-      style = document.createElement("style");
-      style.id = "wecom-temp-reply-click";
-      style.textContent = `
-        html.wecom-im-theme.wecom-locked #main-outlet #topic-footer-buttons,
-        html.wecom-im-theme.wecom-locked #main-outlet .topic-footer-main-buttons,
-        html.wecom-im-theme.wecom-locked #main-outlet .topic-footer-main-buttons *,
-        html.wecom-im-theme.wecom-locked #main-outlet #topic-footer-buttons *,
-        html.wecom-im-theme.wecom-locked #main-outlet .post-stream article .post-controls,
-        html.wecom-im-theme.wecom-locked #main-outlet .post-stream article .post-controls * {
-          visibility: visible !important;
-          height: auto !important;
-          max-height: none !important;
-          overflow: visible !important;
-          pointer-events: auto !important;
-          position: relative !important;
-        }
-        html.wecom-im-theme.wecom-locked #main-outlet .container.posts,
-        html.wecom-im-theme.wecom-locked #main-outlet .topic-area,
-        html.wecom-im-theme.wecom-locked #main-outlet .post-stream,
-        html.wecom-im-theme.wecom-locked #main-outlet .topic-footer-buttons,
-        html.wecom-im-theme.wecom-locked #main-outlet #topic-footer-buttons {
-          visibility: visible !important;
-          height: auto !important;
-          overflow: visible !important;
-        }
-      `;
-      document.documentElement.appendChild(style);
+  function updateComposeSendState() {
+    const { input, send } = composeUi();
+    if (!input || !send) return;
+    send.disabled = composerBridgeState.submitting || !input.value.trim();
+  }
+
+  function setComposeStatus(message, kind, persistent) {
+    const { status } = composeUi();
+    if (!status) return;
+    clearTimeout(setComposeStatus._timer);
+    status.textContent = message || "";
+    status.className = `wecom-compose-status${kind ? ` ${kind}` : ""}`;
+    if (!message || persistent) return;
+    setComposeStatus._timer = setTimeout(() => {
+      status.textContent = "";
+      status.className = "wecom-compose-status";
+    }, COMPOSER_STATUS_DURATION_MS);
+  }
+
+  function flashComposeHint(message, kind) {
+    setComposeStatus(message, kind, false);
+  }
+
+  function reportComposerError(error) {
+    const message = error instanceof Error ? error.message : String(error || "未知错误");
+    console.error("[linuxdo-wecom] composer bridge failed", error);
+    setComposeStatus(`回复失败：${message}`, "error", true);
+  }
+
+  function delay(ms) {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  function nativeComposerTextarea() {
+    if (!isComposerOpen()) return null;
+    return document.querySelector(NATIVE_COMPOSER_TEXTAREA);
+  }
+
+  function nativeComposerMatchesTopic(topicId) {
+    const model = getOpenComposerModel();
+    if (!model) return true;
+    const modelTopicId = model.get?.("topic.id") ?? model.topic?.id;
+    return !modelTopicId || Number(modelTopicId) === Number(topicId);
+  }
+
+  function waitForNativeComposer(topicId) {
+    const readyTextarea = () => {
+      const textarea = nativeComposerTextarea();
+      return textarea && nativeComposerMatchesTopic(topicId) ? textarea : null;
+    };
+    const existing = readyTextarea();
+    if (existing) return Promise.resolve(existing);
+    return new Promise((resolve, reject) => {
+      const interval = setInterval(() => {
+        const textarea = readyTextarea();
+        if (!textarea) return;
+        clearTimeout(timer);
+        clearInterval(interval);
+        resolve(textarea);
+      }, COMPOSER_POLL_INTERVAL_MS);
+      const timer = setTimeout(() => {
+        clearInterval(interval);
+        reject(new Error("原生回复引擎未在规定时间内就绪"));
+      }, COMPOSER_READY_TIMEOUT_MS);
+    });
+  }
+
+  function setNativeComposerValue(value) {
+    const textarea = nativeComposerTextarea();
+    if (!textarea || textarea.value === value) return;
+    const model = getOpenComposerModel();
+    if (typeof model?.set === "function") model.set("reply", value);
+    else if (model && "reply" in model) model.reply = value;
+    const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set;
+    if (!setter) throw new Error("无法连接原生回复输入框");
+    setter.call(textarea, value);
+    textarea.dispatchEvent(new Event("input", { bubbles: true }));
+  }
+
+  function storeComposerDraft(value) {
+    const topicId = composerBridgeState.topicId;
+    if (!topicId) return;
+    composerBridgeState.drafts.set(topicId, value);
+  }
+
+  function syncFromNativeComposer(textarea) {
+    const { input } = composeUi();
+    if (!input) return;
+    if (input.value) {
+      setNativeComposerValue(input.value);
+    } else if (textarea.value) {
+      input.value = textarea.value;
+      storeComposerDraft(input.value);
     }
-    try {
-      return fn();
-    } finally {
-      setTimeout(() => {
-        document.getElementById("wecom-temp-reply-click")?.remove();
-      }, 800);
+    updateComposeSendState();
+  }
+
+  function bindNativeComposerInput(textarea) {
+    if (textarea.dataset.wecomBridgeBound === "1") return;
+    textarea.dataset.wecomBridgeBound = "1";
+    textarea.addEventListener("input", () => {
+      const { input } = composeUi();
+      if (!input || input.value === textarea.value) return;
+      input.value = textarea.value;
+      storeComposerDraft(input.value);
+      updateComposeSendState();
+    });
+  }
+
+  function connectNativeComposer(postNumber) {
+    if (composerBridgeState.connecting) return composerBridgeState.connecting;
+    const requestedPost = Number(postNumber) || null;
+    const wrongTopic = composerBridgeState.nativeTopicId !== chatState.topicId;
+    const wrongReplyTarget = requestedPost !== composerBridgeState.nativeReplyToPostNumber;
+    if (!isComposerOpen() || wrongTopic || wrongReplyTarget) {
+      if (!openNativeComposer(requestedPost)) {
+        return Promise.reject(new Error("无法启动原生回复引擎"));
+      }
     }
+    const topicId = chatState.topicId;
+    const connectionSerial = ++composerBridgeState.connectionSerial;
+    const connection = waitForNativeComposer(topicId).then((textarea) => {
+      if (chatState.topicId !== topicId) throw new Error("回复目标已切换，请重新输入");
+      composerBridgeState.nativeTopicId = topicId;
+      composerBridgeState.nativeReplyToPostNumber = requestedPost;
+      bindNativeComposerInput(textarea);
+      syncFromNativeComposer(textarea);
+      return textarea;
+    });
+    composerBridgeState.connecting = connection.finally(() => {
+      if (composerBridgeState.connectionSerial === connectionSerial) {
+        composerBridgeState.connecting = null;
+      }
+    });
+    return composerBridgeState.connecting;
+  }
+
+  function connectComposerFromUi() {
+    connectNativeComposer(composerBridgeState.replyToPostNumber).catch(reportComposerError);
+  }
+
+  function handleComposerInput(input) {
+    storeComposerDraft(input.value);
+    if (composeUi().status?.classList.contains("error")) setComposeStatus("", "", false);
+    updateComposeSendState();
+    const correctTopic = nativeComposerMatchesTopic(chatState.topicId);
+    const correctTarget = composerBridgeState.nativeReplyToPostNumber === composerBridgeState.replyToPostNumber;
+    if (nativeComposerTextarea() && correctTopic && correctTarget) {
+      setNativeComposerValue(input.value);
+      return;
+    }
+    connectComposerFromUi();
+  }
+
+  function handleComposerKeydown(event) {
+    if (event.key !== "Enter" || event.shiftKey || event.isComposing || event.keyCode === 229) return;
+    event.preventDefault();
+    submitComposerFromUi(event);
+  }
+
+  function submitComposerFromUi(event) {
+    event?.preventDefault?.();
+    submitComposer().catch(reportComposerError);
+  }
+
+  function replyTargetLabel(postNumber) {
+    const message = document.querySelector(`.wecom-msg[data-post-number="${postNumber}"]`);
+    const name = message?.querySelector(".wecom-msg-name")?.textContent?.trim();
+    return name ? `回复 ${name} · #${postNumber}` : `回复消息 #${postNumber}`;
+  }
+
+  function showTargetedReply(postNumber) {
+    const { target } = composeUi();
+    composerBridgeState.replyToPostNumber = Number(postNumber) || null;
+    if (!target || !composerBridgeState.replyToPostNumber) return;
+    target.querySelector("span").textContent = replyTargetLabel(postNumber);
+    target.hidden = false;
+  }
+
+  function hideTargetedReply() {
+    const { target } = composeUi();
+    composerBridgeState.replyToPostNumber = null;
+    if (target) target.hidden = true;
+  }
+
+  async function retargetComposerToTopic() {
+    if (!isComposerOpen()) return;
+    if (!retargetOpenNativeComposer(null)) throw new Error("无法取消指定回复目标");
+    composerBridgeState.nativeReplyToPostNumber = null;
+    await delay(COMPOSER_INPUT_SETTLE_MS);
+    const textarea = await waitForNativeComposer(chatState.topicId);
+    syncFromNativeComposer(textarea);
+  }
+
+  function cancelTargetedReply(event) {
+    event?.preventDefault?.();
+    event?.stopPropagation?.();
+    hideTargetedReply();
+    retargetComposerToTopic().catch(reportComposerError);
+    composeUi().input?.focus();
+  }
+
+  function switchComposerTopic(topicId) {
+    const { input } = composeUi();
+    const previousTopicId = composerBridgeState.topicId;
+    if (input && previousTopicId) {
+      composerBridgeState.drafts.set(previousTopicId, input.value);
+    }
+    composerBridgeState.topicId = topicId || null;
+    composerBridgeState.connectionSerial += 1;
+    composerBridgeState.connecting = null;
+    hideTargetedReply();
+    if (input) input.value = composerBridgeState.drafts.get(topicId) || "";
+    setComposeStatus("", "", false);
+    updateComposeSendState();
+  }
+
+  function setComposerPlaceholder(title) {
+    const { input } = composeUi();
+    if (!input) return;
+    input.placeholder = title ? `发送给 ${title}` : "发送消息";
   }
 
   function clickNativeReplyButton(postNumber) {
-    return withClickableNativeReplyControls(() => {
-      if (postNumber) {
-        const article = document.querySelector(
-          `.post-stream article[data-post-number="${postNumber}"], #post_${postNumber}, article[id="post_${postNumber}"]`
-        );
-        const postReply = article?.querySelector(
-          "button.reply, .post-controls button.reply, button.create.reply, .reply.create"
-        );
-        if (postReply) {
-          postReply.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, view: window }));
-          return true;
-        }
-      }
-      const topicSelectors = [
-        "#topic-footer-buttons button.create",
-        "#topic-footer-buttons button.btn-primary.create",
-        ".topic-footer-main-buttons button.create",
-        ".topic-footer-main-buttons button.btn-primary",
-        "button.btn-primary.create.reply",
-        "button.create.reply"
-      ];
-      for (const sel of topicSelectors) {
-        const btn = document.querySelector(sel);
-        // 避开顶栏「发新帖」
-        if (!btn || btn.id === "create-topic" || btn.closest(".d-header")) continue;
-        btn.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, view: window }));
-        return true;
-      }
-      return false;
-    });
+    if (postNumber) {
+      const article = document.querySelector(
+        `.post-stream article[data-post-number="${postNumber}"], #post_${postNumber}, article[id="post_${postNumber}"]`
+      );
+      const postReply = article?.querySelector(
+        "button.reply, .post-controls button.reply, button.create.reply, .reply.create"
+      );
+      if (!postReply) return false;
+      postReply.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, view: window }));
+      return true;
+    }
+    const topicSelectors = [
+      "#topic-footer-buttons button.create",
+      "#topic-footer-buttons button.btn-primary.create",
+      ".topic-footer-main-buttons button.create",
+      ".topic-footer-main-buttons button.btn-primary",
+      "button.btn-primary.create.reply",
+      "button.create.reply"
+    ];
+    for (const selector of topicSelectors) {
+      const button = document.querySelector(selector);
+      if (!button || button.id === "create-topic" || button.closest(".d-header")) continue;
+      button.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, view: window }));
+      return true;
+    }
+    return false;
   }
 
   function openComposerViaService(postNumber) {
@@ -4510,6 +4905,7 @@
     try {
       if (postNumber) {
         const post = findLoadedPost(topic, postNumber);
+        if (!post) return false;
         if (post && typeof composer.replyTo === "function") {
           composer.replyTo(post);
           return true;
@@ -4523,6 +4919,7 @@
           });
           return true;
         }
+        return false;
       }
 
       if (topic && typeof composer.replyToTopic === "function") {
@@ -4546,107 +4943,165 @@
     return false;
   }
 
-  function openComposerViaKeyboard(postNumber) {
+  function attemptComposerOpen(label, action) {
     try {
-      // Discourse：r = 回复话题；若先聚焦某楼再 r 可带引用——这里做话题级兜底
-      if (postNumber) {
-        const article = document.querySelector(
-          `.post-stream article[data-post-number="${postNumber}"], #post_${postNumber}`
-        );
-        article?.setAttribute?.("tabindex", "-1");
-        article?.focus?.();
-      } else {
-        document.activeElement?.blur?.();
-      }
-      const opts = { key: "r", code: "KeyR", keyCode: 82, which: 82, bubbles: true, cancelable: true, view: window };
-      document.dispatchEvent(new KeyboardEvent("keydown", opts));
-      document.body.dispatchEvent(new KeyboardEvent("keydown", opts));
-      return true;
-    } catch {
+      return Boolean(action());
+    } catch (error) {
+      console.error(`[linuxdo-wecom] ${label} failed`, error);
       return false;
     }
   }
 
-  /** 打开 Discourse 原生 composer（必须真正 open，禁止只 focus textarea） */
+  function tryComposerStrategies(postNumber) {
+    const strategies = [
+      ["composer service", () => openComposerViaService(postNumber)],
+      ["native reply button", () => clickNativeReplyButton(postNumber)]
+    ];
+    for (const [label, action] of strategies) {
+      if (attemptComposerOpen(label, action)) return true;
+    }
+    return false;
+  }
+
+  function reportComposerOpenFailure(postNumber) {
+    flashComposeHint("打开失败：请点右上角「原生视图」回复", "error");
+    console.error("[linuxdo-wecom] openNativeComposer failed", {
+      topicId: chatState.topicId,
+      postNumber,
+      hasOwner: !!getEmberOwner(),
+      hasComposer: !!getComposerService(getEmberOwner())
+    });
+  }
+
+  function closeNativeComposerForTopicSwitch() {
+    const owner = getEmberOwner();
+    const composer = owner ? getComposerService(owner) : null;
+    if (!composer) return false;
+    if (typeof composer.saveAndCloseComposer === "function") {
+      composer.saveAndCloseComposer();
+      return true;
+    }
+    if (typeof composer.close === "function") {
+      composer.close();
+      return true;
+    }
+    return false;
+  }
+
+  function retargetActiveComposer(postNumber) {
+    const requestedPost = Number(postNumber) || null;
+    const wrongTopic = composerBridgeState.nativeTopicId !== chatState.topicId;
+    const wrongReplyTarget = requestedPost !== composerBridgeState.nativeReplyToPostNumber;
+    if (wrongTopic) {
+      if (!closeNativeComposerForTopicSwitch() || !openComposerViaService(requestedPost)) {
+        throw new Error("无法切换原生回复话题");
+      }
+      return;
+    }
+    if (wrongReplyTarget && !retargetOpenNativeComposer(requestedPost)) {
+      throw new Error("无法更新原生回复目标");
+    }
+  }
+
+  /** 启动后台 Discourse composer；它在 IM 模式中始终保持离屏。 */
   function openNativeComposer(postNumber) {
     try {
-      flashComposeHint("正在打开编辑器…", "busy");
-
       if (isComposerOpen()) {
-        const ta = document.querySelector("#reply-control.open textarea, #reply-control.fullscreen textarea");
-        ta?.focus?.();
-        flashComposeHint("编辑器已打开", "busy");
+        retargetActiveComposer(postNumber);
         return true;
       }
-
-      let opened = false;
-      try { opened = !!openComposerViaService(postNumber); } catch { /* fall through */ }
-      if (!opened) {
-        try { opened = !!clickNativeReplyButton(postNumber); } catch { /* fall through */ }
-      }
-      if (!opened) {
-        try { openComposerViaKeyboard(postNumber); } catch { /* fall through */ }
-      }
-
-      // 最后手段：短暂解锁 LOCK，再试一次
-      setTimeout(() => {
-        if (isComposerOpen()) {
-          flashComposeHint("编辑器已打开", "busy");
-          return;
-        }
-        const root = document.documentElement;
-        const hadLock = root.classList.contains(LOCK_CLASS);
-        const unlock = document.createElement("style");
-        unlock.id = "wecom-unlock-for-reply";
-        unlock.textContent = `
-          html.wecom-im-theme.wecom-locked #main-outlet-wrapper,
-          html.wecom-im-theme.wecom-locked #main-outlet,
-          html.wecom-im-theme.wecom-locked #main-outlet > * {
-            pointer-events: auto !important;
-            visibility: visible !important;
-            height: auto !important;
-            overflow: visible !important;
-          }
-          html.wecom-im-theme #reply-control {
-            display: block !important;
-            pointer-events: auto !important;
-            z-index: 600 !important;
-          }
-        `;
-        document.documentElement.appendChild(unlock);
-        if (hadLock) root.classList.remove(LOCK_CLASS);
-        try {
-          if (!openComposerViaService(postNumber) && !clickNativeReplyButton(postNumber)) {
-            openComposerViaKeyboard(postNumber);
-          }
-        } catch { /* ignore */ }
-        setTimeout(() => {
-          if (hadLock) root.classList.add(LOCK_CLASS);
-          document.getElementById("wecom-unlock-for-reply")?.remove();
-          if (isComposerOpen()) {
-            flashComposeHint("编辑器已打开", "busy");
-          } else {
-            flashComposeHint("打开失败：请点右上角「原生视图」回复", "error");
-            console.warn("[linuxdo-wecom] openNativeComposer failed", {
-              topicId: chatState.topicId,
-              postNumber,
-              hasOwner: !!getEmberOwner(),
-              hasComposer: !!getComposerService(getEmberOwner())
-            });
-          }
-        }, 250);
-      }, 180);
-
-      return true;
+      const opened = tryComposerStrategies(postNumber);
+      if (opened) return true;
+      reportComposerOpenFailure(postNumber);
+      return false;
     } catch (err) {
-      console.warn("[linuxdo-wecom] openNativeComposer crashed", err);
+      console.error("[linuxdo-wecom] openNativeComposer crashed", err);
       flashComposeHint(`打开失败：${err && err.message ? err.message : "未知错误"}`, "error");
       return false;
     }
   }
 
+  function nativeComposerErrorText() {
+    const error = document.querySelector(NATIVE_COMPOSER_ERROR);
+    return error?.textContent?.replace(/\s+/g, " ").trim() || "";
+  }
+
+  function nativeSubmitButton() {
+    return document.querySelector(NATIVE_COMPOSER_SUBMIT);
+  }
+
+  function waitForComposerSubmitOutcome() {
+    if (!isComposerOpen()) return Promise.resolve();
+    return new Promise((resolve, reject) => {
+      const finish = (error) => {
+        clearTimeout(timer);
+        observer.disconnect();
+        if (error) reject(error); else resolve();
+      };
+      const inspect = () => {
+        if (!isComposerOpen()) {
+          finish();
+          return;
+        }
+        const errorText = nativeComposerErrorText();
+        if (errorText) finish(new Error(errorText));
+      };
+      const observer = new MutationObserver(inspect);
+      const timer = setTimeout(() => {
+        finish(new Error("发送状态未确认，请切换原生视图查看具体错误"));
+      }, COMPOSER_SUBMIT_TIMEOUT_MS);
+      observer.observe(document.documentElement, { attributes: true, childList: true, subtree: true });
+      inspect();
+    });
+  }
+
+  function completeComposerSubmission(input) {
+    const topicId = chatState.topicId;
+    input.value = "";
+    storeComposerDraft("");
+    hideTargetedReply();
+    composerBridgeState.nativeTopicId = null;
+    composerBridgeState.nativeReplyToPostNumber = null;
+    setComposeStatus("已发送", "success", false);
+    if (topicId) {
+      syncNewPostsFromDom();
+      scheduleSubmittedPostSync(topicId);
+      refreshTopicAfterSubmission(topicId).catch((error) => {
+        console.error("[linuxdo-wecom] submitted post refresh failed", error);
+        setComposeStatus("已发送，但当前页同步失败，请点击刷新", "error", true);
+      });
+    }
+  }
+
+  async function submitComposer() {
+    const { input } = composeUi();
+    if (!input || !input.value.trim() || composerBridgeState.submitting) return;
+    composerBridgeState.submitting = true;
+    updateComposeSendState();
+    setComposeStatus("正在发送…", "busy", true);
+    try {
+      await connectNativeComposer(composerBridgeState.replyToPostNumber);
+      setNativeComposerValue(input.value);
+      await delay(COMPOSER_INPUT_SETTLE_MS);
+      const button = nativeSubmitButton();
+      if (!button) throw new Error("找不到原生发送按钮");
+      if (button.disabled || button.getAttribute("aria-disabled") === "true") {
+        throw new Error(nativeComposerErrorText() || "内容未达到站点发送要求");
+      }
+      button.click();
+      await waitForComposerSubmitOutcome();
+      completeComposerSubmission(input);
+    } finally {
+      composerBridgeState.submitting = false;
+      updateComposeSendState();
+    }
+  }
+
   function replyToPost(postNumber) {
-    openNativeComposer(postNumber);
+    showTargetedReply(postNumber);
+    const pending = connectNativeComposer(postNumber);
+    composeUi().input?.focus();
+    pending.catch(reportComposerError);
   }
 
   const TIME_SEP_GAP = 10 * 60 * 1000;
@@ -4668,35 +5123,237 @@
     return frag.join("");
   }
 
-  async function loadTopic(topicId) {
+  async function fetchPostsByIds(topicId, ids) {
+    if (!ids.length) return [];
+    const query = ids.map((id) => `post_ids[]=${encodeURIComponent(id)}`).join("&");
+    const data = await api(`/t/${topicId}/posts.json?${query}`);
+    return data?.post_stream?.posts || data?.posts || [];
+  }
+
+  async function postsForTopicOpening(topicId, stream, posts, aroundPostNumber) {
+    const ordered = orderedTopicPosts(posts, stream);
+    const target = Number(aroundPostNumber) || 0;
+    if (target > 1) return ordered;
+    if (!stream.length || ordered.some((post) => postNumberOf(post) === 1)) return ordered;
+    const loaded = new Set(ordered.map(postIdOf));
+    const missing = stream.slice(0, POST_SYNC_BATCH_SIZE)
+      .filter((id) => !loaded.has(String(id)));
+    if (!missing.length) return ordered;
+    try {
+      const fetched = await fetchPostsByIds(topicId, missing);
+      return orderedTopicPosts(ordered.concat(fetched), stream);
+    } catch (error) {
+      console.error("[linuxdo-wecom] failed to load the topic opening posts", error);
+      return ordered;
+    }
+  }
+
+  function openingPostNumber(topicId, topicData) {
+    const fromPath = postNumberFromPath(location.pathname);
+    if (fromPath > 0) return fromPath;
+    const remembered = getRememberedPost(topicId);
+    if (remembered > 0) return remembered;
+    const fromList = listState.topics.find((topic) => Number(topic.id) === Number(topicId));
+    const fromTopic = Number(fromList?.last_read_post_number || topicData?.last_read_post_number) || 0;
+    return fromTopic > 0 ? fromTopic : 0;
+  }
+
+  async function fetchTopicJson(topicId, postNumber, force) {
+    const opts = force ? { cache: "no-store" } : {};
+    const n = Number(postNumber) || 0;
+    if (n > 1) {
+      try {
+        return await api(`/t/${topicId}/${n}.json`, opts);
+      } catch (error) {
+        console.warn("[linuxdo-wecom] failed to load topic at post", n, error);
+      }
+    }
+    return await api(`/t/${topicId}.json`, opts);
+  }
+
+  function rememberTopicPost(topicId, postNumber) {
+    const id = Number(topicId);
+    const n = Number(postNumber) || 0;
+    if (!id || n < 1) return;
+    const map = readLastReadMap();
+    if (Number(map[id]) === n) {
+      syncTopicLastReadHref(id, n);
+      return;
+    }
+    map[id] = n;
+    const keys = Object.keys(map);
+    if (keys.length > LAST_READ_MAX_TOPICS) {
+      for (const key of keys.slice(0, keys.length - LAST_READ_MAX_TOPICS)) delete map[key];
+    }
+    try {
+      localStorage.setItem(LAST_READ_KEY, JSON.stringify(map));
+    } catch { /* ignore quota */ }
+    const topic = listState.topics.find((item) => Number(item.id) === id);
+    if (topic) topic.last_read_post_number = n;
+    syncTopicLastReadHref(id, n);
+  }
+
+  function syncTopicLastReadHref(topicId, postNumber) {
+    const row = document.querySelector(`.wecom-conv[data-topic-id="${topicId}"]`);
+    if (!row) return;
+    const current = row.getAttribute("href") || "";
+    const slug = topicRouteFromPath(current).slug || chatState.slug || "topic";
+    const next = postNumber > 1 ? `/t/${slug}/${topicId}/${postNumber}` : `/t/${slug}/${topicId}`;
+    if (current !== next) row.setAttribute("href", next);
+  }
+
+  function replaceTopicPostUrl(topicId, postNumber) {
+    const current = topicRouteFromPath(location.pathname);
+    if (Number(current.topicId) !== Number(topicId)) return;
+    const n = Number(postNumber) || 0;
+    if ((current.postNumber || 0) === n || (n <= 1 && current.postNumber <= 1)) return;
+    const slug = current.slug || chatState.slug || "topic";
+    const path = n > 1 ? `/t/${slug}/${topicId}/${n}` : `/t/${slug}/${topicId}`;
+    const next = path + location.search + location.hash;
+    if (`${location.pathname}${location.search}${location.hash}` === next) return;
+    suppressHistoryApply = true;
+    try {
+      history.replaceState(history.state, "", next);
+    } finally {
+      suppressHistoryApply = false;
+    }
+  }
+
+  function visibleTopicPosts(body) {
+    if (!body) return [];
+    const rect = body.getBoundingClientRect();
+    const posts = [];
+    for (const msg of body.querySelectorAll(".wecom-msg[data-post-number]")) {
+      const box = msg.getBoundingClientRect();
+      if (box.bottom <= rect.top + 8 || box.top >= rect.bottom - 8) continue;
+      const number = Number(msg.dataset.postNumber) || 0;
+      if (number) posts.push(number);
+    }
+    return posts;
+  }
+
+  function scrollChatToPost(body, postNumber) {
+    if (!body || !postNumber) return false;
+    const el = body.querySelector(`.wecom-msg[data-post-number="${postNumber}"]`);
+    if (!el) return false;
+    const delta = el.getBoundingClientRect().top - body.getBoundingClientRect().top;
+    chatState.pinningScroll = true;
+    body.scrollTop = Math.max(0, body.scrollTop + delta);
+    requestAnimationFrame(() => {
+      chatState.pinningScroll = false;
+    });
+    return true;
+  }
+
+  function keepChatAtPost(body, postNumber) {
+    if (!body || !postNumber) return;
+    chatState.pinnedPost = postNumber;
+    const pin = () => {
+      if (Number(chatState.pinnedPost) !== Number(postNumber)) return;
+      scrollChatToPost(body, postNumber);
+    };
+    pin();
+    const pending = [...body.querySelectorAll("img")].filter((image) => !image.complete);
+    pending.forEach((image) => {
+      image.addEventListener("load", pin, { once: true });
+      image.addEventListener("error", pin, { once: true });
+    });
+    [50, 160, 400, 800].forEach((delay) => setTimeout(pin, delay));
+    setTimeout(() => {
+      pin();
+      if (Number(chatState.pinnedPost) === Number(postNumber)) chatState.pinnedPost = 0;
+    }, 1000);
+  }
+
+  function markPostsOnscreen(postNumbers) {
+    const owner = getEmberOwner();
+    const screenTrack = owner ? safeLookup(owner, "service:screen-track") : null;
+    if (!screenTrack || typeof screenTrack.setOnscreen !== "function") return false;
+    try {
+      screenTrack.setOnscreen(postNumbers, postNumbers);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  function reportReadTimings(topicId, postNumbers) {
+    if (!topicId || !postNumbers.length) return;
+    if (markPostsOnscreen(postNumbers)) return;
+    const body = new URLSearchParams();
+    body.set("topic_id", String(topicId));
+    body.set("topic_time", "400");
+    for (const number of postNumbers) body.set(`timings[${number}]`, "400");
+    fetch("/topics/timings", {
+      method: "POST",
+      credentials: "same-origin",
+      headers: {
+        "X-CSRF-Token": csrfToken(),
+        "X-Requested-With": "XMLHttpRequest",
+        "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8"
+      },
+      body: body.toString()
+    }).catch(() => {});
+  }
+
+  const trackVisibleTopicPost = debounce(() => {
+    if (!chatState.topicId || chatState.pinnedPost || chatState.pinningScroll) return;
+    const body = document.querySelector(".wecom-chat-body");
+    const visible = visibleTopicPosts(body);
+    const postNumber = visible[0];
+    if (!postNumber) return;
+    rememberTopicPost(chatState.topicId, postNumber);
+    replaceTopicPostUrl(chatState.topicId, postNumber);
+    reportReadTimings(chatState.topicId, visible);
+  }, 220);
+
+  async function loadTopic(topicId, force = false) {
     if (!topicId || chatState.loading) return;
-    if (chatState.topicId === topicId) {
+    if (!force && chatState.topicId === topicId) {
       syncListActive();
       return;
     }
+    const sameTopic = chatState.topicId === topicId;
+    const requestedPost = openingPostNumber(topicId, null);
     chatState.loading = true;
     chatState.topicId = topicId;
     ensureChatPanel();
+    if (!sameTopic) switchComposerTopic(topicId);
     const body = document.querySelector(".wecom-chat-body");
-    if (body) {
+    if (body && !sameTopic) {
       delete body.dataset.state;
       body.innerHTML = `<div class="wecom-chat-loading">加载中…</div>`;
     }
     try {
-      const data = await api(`/t/${topicId}.json`);
+      let data = await fetchTopicJson(topicId, requestedPost, force);
       if (chatState.topicId !== topicId) return; // 路由已切走
-      const posts = (data.post_stream && data.post_stream.posts) || [];
+      let openPost = openingPostNumber(topicId, data);
+      if (!requestedPost && openPost > 1 && !((data.post_stream && data.post_stream.posts) || [])
+        .some((post) => postNumberOf(post) === openPost)) {
+        try {
+          data = await fetchTopicJson(topicId, openPost, force);
+        } catch { /* 保留首页 */ }
+        if (chatState.topicId !== topicId) return;
+      }
+      const stream = (data.post_stream && data.post_stream.stream) || [];
+      const posts = await postsForTopicOpening(
+        topicId,
+        stream,
+        (data.post_stream && data.post_stream.posts) || [],
+        openPost
+      );
+      if (chatState.topicId !== topicId) return;
       renderPinnedBanner(posts);
       renderMemberPanel(data, posts);
-      chatState.stream = (data.post_stream && data.post_stream.stream) || posts.map((p) => p.id);
-      chatState.renderedFirstIdx = chatState.stream.indexOf(posts.length ? posts[0].id : -1);
-      if (chatState.renderedFirstIdx < 0) chatState.renderedFirstIdx = 0;
-      const lastLoadedId = posts.length ? posts[posts.length - 1].id : -1;
-      chatState.renderedLastIdx = chatState.stream.indexOf(lastLoadedId);
-      if (chatState.renderedLastIdx < 0) {
-        chatState.renderedLastIdx = chatState.renderedFirstIdx + Math.max(posts.length - 1, 0);
-      }
-      chatState.renderedLastNumber = posts.reduce((m, p) => Math.max(m, p.post_number), 0);
+      chatState.stream = stream.length ? stream.slice() : posts.map((post) => post.id);
+      chatState.slug = data.slug || chatState.slug || topicRouteFromPath(location.pathname).slug || "";
+      const loadedIndexes = posts.map((post) => streamIndexOf(post.id)).filter((index) => index >= 0);
+      chatState.renderedFirstIdx = loadedIndexes.length ? Math.min(...loadedIndexes) : 0;
+      chatState.renderedLastIdx = loadedIndexes.length ? Math.max(...loadedIndexes) : -1;
+      chatState.renderedLastNumber = posts.reduce(
+        (max, post) => Math.max(max, Number(post.post_number) || 0),
+        0
+      );
       chatState.hasOlder = chatState.renderedFirstIdx > 0;
       chatState.hasNewer = chatState.renderedLastIdx >= 0 &&
         chatState.renderedLastIdx < chatState.stream.length - 1;
@@ -4720,16 +5377,11 @@
         }
       }
       const replyTotal = data.posts_count || posts.length;
+      chatState.replyTotal = replyTotal;
       if (sub) sub.textContent = `归属于 linux.do · ${replyTotal} 条回复`;
       document.title = `${chatState.title} - Linux DO`;
 
-      // composer 输入区占位：发送给 {话题标题}
-      const composeBtn = document.querySelector(".wecom-chat-compose");
-      const composeLabel = composeBtn?.querySelector("span");
-      if (composeBtn && composeLabel) {
-        delete composeBtn.dataset.defaultLabel;
-        composeLabel.textContent = chatState.title ? `发送给 ${chatState.title}` : "点击回复，打开原生编辑器…";
-      }
+      setComposerPlaceholder(chatState.title);
 
       const chatAvatar = document.querySelector(".wecom-chat-avatar");
       if (chatAvatar) {
@@ -4753,14 +5405,25 @@
             ? `<a class="wecom-chat-chip" href="/c/${escapeHtml(cat.slug)}/${cat.id}"><span class="wecom-nav2-cat-dot" style="background:#${escapeHtml(cat.color || "8F959E")}"></span>${escapeHtml(cat.name)}</a>`
             : "";
         }
-        if (cat && sub) sub.textContent = `归属于 ${cat.name} · ${replyTotal} 条回复`;
+        if (cat && sub) sub.textContent = `归属于 ${cat.name} · ${chatState.replyTotal || replyTotal} 条回复`;
       });
 
       if (body) {
         body.innerHTML = renderBubbles(posts, getCurrentUsername()) ||
           `<div class="wecom-chat-empty">${ICONS.msg}<div>暂无消息</div></div>`;
         hydrateChatImages(body);
-        body.scrollTop = body.scrollHeight;
+        syncRenderedWindow(body);
+        if (sameTopic) {
+          body.scrollTop = Math.min(body.scrollTop, body.scrollHeight);
+        } else if (openPost > 1) {
+          rememberTopicPost(topicId, openPost);
+          replaceTopicPostUrl(topicId, openPost);
+          keepChatAtPost(body, openPost);
+        } else {
+          body.scrollTop = 0;
+          rememberTopicPost(topicId, openPost || 1);
+          replaceTopicPostUrl(topicId, openPost || 1);
+        }
       }
       syncListActive();
     } catch (err) {
@@ -4770,9 +5433,50 @@
     }
   }
 
-  function sortPostsByStream(posts, ids) {
-    const order = new Map(ids.map((id, i) => [id, i]));
-    return posts.slice().sort((a, b) => (order.get(a.id) ?? 0) - (order.get(b.id) ?? 0));
+  function postNumberOf(post) {
+    return Number(post?.post_number) || 0;
+  }
+
+  function postIdOf(post) {
+    const id = post?.id;
+    return id == null ? "" : String(id);
+  }
+
+  function sortPostsByStream(posts, ids = []) {
+    const order = new Map(ids.map((id, index) => [String(id), index]));
+    return posts.slice().sort((a, b) => {
+      const ai = order.has(postIdOf(a)) ? order.get(postIdOf(a)) : Number.MAX_SAFE_INTEGER;
+      const bi = order.has(postIdOf(b)) ? order.get(postIdOf(b)) : Number.MAX_SAFE_INTEGER;
+      return ai - bi || postNumberOf(a) - postNumberOf(b);
+    });
+  }
+
+  function orderedTopicPosts(posts, stream) {
+    return sortPostsByStream(posts, stream);
+  }
+
+  function syncRenderedWindow(body) {
+    if (!body) return;
+    const indexes = new Set();
+    let maxNumber = 0;
+    for (const message of body.querySelectorAll(".wecom-msg[data-post-number]")) {
+      maxNumber = Math.max(maxNumber, Number(message.dataset.postNumber) || 0);
+      const index = streamIndexOf(message.dataset.postId);
+      if (index >= 0) indexes.add(index);
+    }
+    if (!indexes.size) {
+      chatState.renderedLastNumber = Math.max(chatState.renderedLastNumber, maxNumber);
+      return;
+    }
+    let first = Infinity;
+    let last = -1;
+    for (const index of indexes) first = Math.min(first, index);
+    for (let index = first; indexes.has(index); index += 1) last = index;
+    chatState.renderedFirstIdx = first;
+    chatState.renderedLastIdx = last;
+    chatState.renderedLastNumber = maxNumber;
+    chatState.hasOlder = first > 0;
+    chatState.hasNewer = last < chatState.stream.length - 1;
   }
 
   /** 向上滚动加载更早的帖子 */
@@ -4789,13 +5493,12 @@
         (data.post_stream && data.post_stream.posts) || data.posts || [],
         ids
       );
-      chatState.renderedFirstIdx = Math.max(0, chatState.renderedFirstIdx - ids.length);
-      chatState.hasOlder = chatState.renderedFirstIdx > 0;
       if (body && posts.length) {
         const prevHeight = body.scrollHeight;
         body.insertAdjacentHTML("afterbegin", renderBubbles(posts, getCurrentUsername()));
         hydrateChatImages(body);
         body.scrollTop += body.scrollHeight - prevHeight;
+        syncRenderedWindow(body);
       }
     } catch { /* 保留现状 */ } finally {
       chatState.loading = false;
@@ -4824,72 +5527,210 @@
         (data.post_stream && data.post_stream.posts) || data.posts || [],
         ids
       );
-      chatState.renderedLastIdx = start + ids.length - 1;
-      chatState.hasNewer = chatState.renderedLastIdx < chatState.stream.length - 1;
-      if (posts.length) {
-        chatState.renderedLastNumber = posts.reduce(
-          (m, p) => Math.max(m, p.post_number || 0),
-          chatState.renderedLastNumber
-        );
-      }
-      if (body && posts.length) {
-        // 去掉可能的底部状态占位后追加
-        body.insertAdjacentHTML("beforeend", renderBubbles(posts, getCurrentUsername()));
-        hydrateChatImages(body);
-      }
+      appendFreshPosts(posts, body);
     } catch { /* 保留现状 */ } finally {
       chatState.loading = false;
     }
   }
 
+  function streamIndexOf(id) {
+    if (id == null) return -1;
+    return chatState.stream.findIndex((candidate) => String(candidate) === String(id));
+  }
+
+  function appendFreshPosts(posts, body, options = {}) {
+    if (!body || !Array.isArray(posts) || !posts.length) return 0;
+    const renderedNumbers = new Set(
+      [...body.querySelectorAll(".wecom-msg[data-post-number]")]
+        .map((node) => Number(node.dataset.postNumber))
+        .filter((number) => number > 0)
+    );
+    const fresh = posts
+      .filter((post) => {
+        const number = postNumberOf(post);
+        return number > 0 && !renderedNumbers.has(number);
+      })
+      .sort((a, b) => postNumberOf(a) - postNumberOf(b));
+    if (!fresh.length) {
+      syncRenderedWindow(body);
+      return 0;
+    }
+    body.querySelector(".wecom-chat-empty")?.remove();
+    const currentMax = Math.max(...renderedNumbers, 0);
+    if (fresh.every((post) => postNumberOf(post) > currentMax)) {
+      body.insertAdjacentHTML("beforeend", renderBubbles(fresh, getCurrentUsername()));
+    } else {
+      for (const post of fresh) {
+        const target = [...body.querySelectorAll(".wecom-msg[data-post-number]")]
+          .find((node) => Number(node.dataset.postNumber) > postNumberOf(post));
+        const html = bubbleHtml(post, getCurrentUsername());
+        if (target) target.insertAdjacentHTML("beforebegin", html);
+        else body.insertAdjacentHTML("beforeend", html);
+      }
+    }
+    hydrateChatImages(body);
+    syncRenderedWindow(body);
+    if (options.scroll !== false) body.scrollTop = body.scrollHeight;
+    return fresh.length;
+  }
+
+  function nativeTopicPostElements() {
+    const selectors = [
+      ".post-stream article.topic-post",
+      "#main-outlet article.topic-post",
+      ".post-stream .topic-post[data-post-number]",
+      "#main-outlet .topic-post[data-post-number]",
+      ".post-stream article[data-post-number]",
+      "#main-outlet article[data-post-number]"
+    ];
+    const elements = new Set();
+    for (const selector of selectors) {
+      document.querySelectorAll(selector).forEach((element) => elements.add(element));
+    }
+    return [...elements].filter((element) => {
+      const parent = element.parentElement?.closest("article.topic-post, .topic-post[data-post-number]");
+      return !parent || parent === element;
+    });
+  }
+
+  function nativePostIdentity(article) {
+    const author = article.querySelector(
+      ".topic-meta-data a[href*='/u/'], .names a[href*='/u/'], " +
+      ".topic-meta-data [data-user-card], .names [data-user-card], " +
+      "a[data-user-card], [data-username]"
+    );
+    const username = usernameFromElement(author);
+    const id = userIdFromElement(article) || userIdFromElement(author);
+    const fullName = article.querySelector(
+      ".topic-meta-data .full-name, .names .full-name"
+    )?.textContent?.trim() || author?.textContent?.trim() || username || "?";
+    return { username: username || "", id, name: fullName };
+  }
+
+  function nativePostIsMine(article, author, identity) {
+    if (article.classList.contains("current-user-post")) return true;
+    const articleFlag = article.getAttribute("data-current-user-post");
+    if (booleanFlag(articleFlag)) return true;
+    const authorId = author.id || userIdFromElement(article);
+    if (authorId && identity.id && authorId === identity.id) return true;
+    return Boolean(author.username && identity.username &&
+      normalizeUsername(author.username) === normalizeUsername(identity.username));
+  }
+
   /** 发帖后：原生隐藏流里出现的新帖 → 追加为气泡 */
   function syncNewPostsFromDom() {
-    if (!chatState.topicId) return;
-    const articles = document.querySelectorAll(".post-stream article.topic-post");
-    if (!articles.length) return;
+    if (!chatState.topicId) return 0;
+    const articles = nativeTopicPostElements();
+    if (!articles.length) return 0;
     const body = document.querySelector(".wecom-chat-body");
-    if (!body || body.querySelector(".wecom-chat-loading")) return;
-    const myName = getCurrentUsername();
-    let appended = false;
+    if (!body || body.querySelector(".wecom-chat-loading")) return 0;
+    const current = getCurrentUserIdentity();
+    const posts = [];
     for (const article of articles) {
       const number = Number(
         article.dataset.postNumber || (article.id || "").replace("post_", "")
       );
       if (!number || number <= chatState.renderedLastNumber) continue;
-      if (body.querySelector(`[data-post-number="${number}"]`)) {
-        chatState.renderedLastNumber = Math.max(chatState.renderedLastNumber, number);
-        continue;
-      }
+      const articleTopicId = Number(article.dataset.topicId || article.getAttribute("data-topic-id")) || 0;
+      if (articleTopicId && articleTopicId !== Number(chatState.topicId)) continue;
       const cooked = article.querySelector(".cooked");
       if (!cooked) continue;
-      const username =
-        article.querySelector(".topic-meta-data .username a, .names .username a")?.textContent.trim() ||
-        myName || "?";
-      const fullName =
-        article.querySelector(".topic-meta-data .full-name, .names .full-name")?.textContent.trim() || username;
+      const author = nativePostIdentity(article);
       const avatarImg = article.querySelector(".topic-avatar img, .post-avatar img");
       const timeEl = article.querySelector(".post-info .relative-date, .relative-date");
-      const mine =
-        article.classList.contains("current-user-post") ||
-        !!article.querySelector(".current-user-post") ||
-        normalizeUsername(username) === normalizeUsername(myName);
+      const username = author.username || "?";
+      const mine = nativePostIsMine(article, author, current);
       const post = {
+        id: Number(article.dataset.postId || article.dataset.postIdValue) || undefined,
         post_number: number,
         username,
-        name: fullName,
-        avatar_template: avatarImg ? avatarImg.src.replace(/\/\d+\//, "/{size}/") : "",
+        name: author.name,
+        avatar_template: avatarImg?.currentSrc || avatarImg?.src || "",
         cooked: cooked.innerHTML,
         created_at: (timeEl && (timeEl.getAttribute("title") || timeEl.dataset.time)) || new Date().toISOString(),
         yours: mine
       };
-      body.insertAdjacentHTML("beforeend", bubbleHtml(post, myName));
-      chatState.renderedLastNumber = Math.max(chatState.renderedLastNumber, number);
-      appended = true;
+      posts.push(post);
     }
-    if (appended) {
-      hydrateChatImages(body);
-      body.scrollTop = body.scrollHeight;
+    return appendFreshPosts(posts, body);
+  }
+
+  function scheduleSubmittedPostSync(topicId) {
+    for (const delayMs of POST_SYNC_RETRY_DELAYS_MS) {
+      setTimeout(() => {
+        if (chatState.topicId === topicId) syncNewPostsFromDom();
+      }, delayMs);
     }
+  }
+
+  function updateReplySummary(data) {
+    const sub = document.querySelector(".wecom-chat-sub");
+    if (!sub) return;
+    const stream = data?.post_stream?.stream || [];
+    const total = Number(data?.posts_count) || stream.length;
+    if (!total) return;
+    chatState.replyTotal = total;
+    const current = sub.textContent.trim();
+    const prefix = current.split(" · ")[0] || "归属于 linux.do";
+    sub.textContent = `${prefix} · ${total} 条回复`;
+  }
+
+  function setRefreshedStream(stream, body) {
+    if (!Array.isArray(stream) || !stream.length) return [];
+    const previousStream = chatState.stream;
+    const previousLastId = previousStream[chatState.renderedLastIdx];
+    const anchor = previousLastId == null
+      ? -1
+      : stream.findIndex((id) => String(id) === String(previousLastId));
+    chatState.stream = stream.slice();
+    if (body) syncRenderedWindow(body);
+    if (!body || chatState.renderedLastIdx < 0) {
+      chatState.renderedLastIdx = anchor >= 0 ? anchor : Math.min(chatState.renderedLastIdx, stream.length - 1);
+    }
+    chatState.hasNewer = chatState.renderedLastIdx < stream.length - 1;
+    return stream.slice(Math.max(0, chatState.renderedLastIdx + 1), chatState.renderedLastIdx + 1 + POST_SYNC_BATCH_SIZE);
+  }
+
+  async function loadSubmittedTail(topicId, ids, loadedIds, body) {
+    const missing = ids.filter((id) => !loadedIds.has(String(id)));
+    if (!missing.length) return 0;
+    const posts = sortPostsByStream(await fetchPostsByIds(topicId, missing), missing);
+    return appendFreshPosts(posts, body);
+  }
+
+  async function refreshTopicOnce(topicId) {
+    const data = await api(`/t/${topicId}.json`, { cache: "no-store" });
+    if (chatState.topicId !== topicId) return;
+    const body = document.querySelector(".wecom-chat-body");
+    const stream = data?.post_stream?.stream || [];
+    const posts = data?.post_stream?.posts || data?.posts || [];
+    const tailIds = setRefreshedStream(stream, body);
+    let appended = appendFreshPosts(posts, body);
+    const loadedIds = new Set(posts.map((post) => post?.id).filter(Boolean).map(String));
+    appended += await loadSubmittedTail(topicId, tailIds, loadedIds, body);
+    if (chatState.topicId === topicId) {
+      chatState.hasNewer = chatState.renderedLastIdx < chatState.stream.length - 1;
+      updateReplySummary(data);
+      appended += syncNewPostsFromDom();
+    }
+    return appended;
+  }
+
+  async function refreshTopicAfterSubmission(topicId) {
+    if (!topicId || chatState.topicId !== topicId) return;
+    await delay(COMPOSER_INPUT_SETTLE_MS);
+    let lastError = null;
+    for (const delayMs of POST_SYNC_RETRY_DELAYS_MS) {
+      if (delayMs) await delay(delayMs);
+      if (chatState.topicId !== topicId) return;
+      try {
+        if (await refreshTopicOnce(topicId)) return;
+      } catch (error) {
+        lastError = error;
+        console.error("[linuxdo-wecom] submitted post refresh attempt failed", error);
+      }
+    }
+    if (lastError) throw lastError;
   }
 
   /* ============================== 原生视图切换 ============================== */
@@ -5057,7 +5898,7 @@
       const original = history[method];
       history[method] = function (...args) {
         const result = original.apply(this, args);
-        scheduleApply();
+        if (!suppressHistoryApply) scheduleApply();
         return result;
       };
     }
