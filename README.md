@@ -96,15 +96,6 @@ https://github.com/Blackwindow6/linuxdo-wecom-ui/raw/main/linuxdo-wecom.user.js
 
 切换到原生视图后，页面右下角会显示悬浮按钮，可切回企业微信视图。
 
-## 独立隔离
-
-本项目与 `linuxdo-wechat-ui` 等外观脚本完全分开：
-
-- 样式 ID：`linuxdo-wecom-theme`
-- 根节点类名：`wecom-im-theme`
-- 本地存储前缀：`linuxdo-wecom-*`
-
-水印、头像伪装、栏宽、阅读位置和视图模式都只写在本脚本自己的键里。
 
 ## 项目结构
 
