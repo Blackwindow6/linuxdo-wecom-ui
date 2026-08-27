@@ -41,16 +41,6 @@ https://github.com/Blackwindow6/linuxdo-wecom-ui/raw/main/linuxdo-wecom.user.js
 | 刷新网页 | ![刷新网页](./snapshot/刷新网页.png) |
 | Hover 头像通知 | ![Hover 头像通知](./snapshot/hover头像通知.png) |
 
-## 本地验证
-
-测试依赖 `agent-browser`：
-
-```powershell
-python -B tests\wecom_smoke.py
-```
-
-测试覆盖导航与会话布局、搜索框、话题消息、成员栏、水印开关与持久化、图片预览的三种关闭方式，以及原生视图切换。
-
 ## 项目结构
 
 ```text
@@ -58,14 +48,12 @@ linuxdo-wecom-ui/
 ├─ linuxdo-wecom.user.js
 ├─ README.md
 ├─ LICENSE
-├─ snapshot/
-│  ├─ 帖子详情.png
-│  ├─ 自定义聊天背景水印.png
-│  ├─ 点击展开分类列表.png
-│  ├─ 刷新网页.png
-│  └─ hover头像通知.png
-└─ tests/
-   └─ wecom_smoke.py
+└─ snapshot/
+   ├─ 帖子详情.png
+   ├─ 自定义聊天背景水印.png
+   ├─ 点击展开分类列表.png
+   ├─ 刷新网页.png
+   └─ hover头像通知.png
 ```
 
 ## License
