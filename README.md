@@ -11,7 +11,11 @@
 2. 打开 [`linuxdo-wecom.user.js`](./linuxdo-wecom.user.js)，在 GitHub 中点击 **Raw** 后安装。
 3. 访问 <https://linux.do/>；脚本更新后请硬刷新一次。
 
-Raw 安装入口：[点击以 Raw 方式打开脚本](./linuxdo-wecom.user.js?raw=1)。
+Raw 安装入口：
+
+```text
+https://github.com/Blackwindow6/linuxdo-wecom-ui/raw/main/linuxdo-wecom.user.js
+```
 
 ## 功能
 
