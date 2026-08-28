@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Linux DO · 企业微信 IM 外观
 // @namespace    https://linux.do/
-// @version      0.4.4
+// @version      0.4.5
 // @description  将 Linux DO 换成企业微信 5.x 桌面端风格；保留原站数据、路由、通知与回复交互。
 // @author       Richy
 // @match        https://linux.do/*
@@ -189,7 +189,7 @@
       renderListRows();
     } else if (panel) {
       // 兜底：按当前路由拉一次列表再绘
-      loadList(listState.apiPath || listApiForPath(location.pathname) || "/latest.json", true);
+      loadList(listState.apiPath || listApiForPath(location.pathname, location.search), true);
     }
   }
 
@@ -513,23 +513,31 @@
       /^\/c\//.test(pathname) || /^\/tag\//.test(pathname);
   }
 
-  /** 中栏列表 JSON 端点按路由映射 */
-  function listApiForPath(pathname) {
-    if (pathname === "/" || pathname === "/latest") return "/latest.json";
-    if (pathname === "/new") return "/new.json";
-    if (pathname === "/unread" || pathname === "/unseen") return "/unseen.json";
-    if (pathname === "/top") return "/top.json";
-    if (pathname === "/hot") return "/hot.json";
-    if (pathname === "/posted") return "/posted.json";
-    if (pathname === "/read") return "/read.json";
-    if (pathname === "/bookmarks") return "/bookmarks.json";
-    // 类别页本身不是话题流；中栏仍拉 latest，避免 categories.json 无 topic_list
-    if (pathname === "/categories") return "/latest.json";
-    const c = pathname.match(/^\/c\/([\w-]+(?:\/[\w-]+)?)/);
-    if (c) return `/c/${c[1]}.json`;
-    const t = pathname.match(/^\/tag\/([\w-]+)/);
-    if (t) return `/tag/${t[1]}.json`;
-    return "/latest.json";
+  const LIST_API_BY_PATH = Object.freeze({
+    "/": "/latest.json",
+    "/latest": "/latest.json",
+    "/new": "/new.json",
+    "/unread": "/unseen.json",
+    "/unseen": "/unseen.json",
+    "/top": "/top.json",
+    "/hot": "/hot.json",
+    "/posted": "/posted.json",
+    "/read": "/read.json",
+    "/bookmarks": "/bookmarks.json",
+    // 类别索引本身没有 topic_list，继续展示最新话题。
+    "/categories": "/latest.json"
+  });
+
+  function scopedListApiForPath(pathname) {
+    if (!/^\/(?:c|tag)\/[^/]+/.test(pathname)) return "";
+    return pathname.endsWith(".json") ? pathname : `${pathname}.json`;
+  }
+
+  function listApiForPath(pathname, search = "") {
+    const normalized = String(pathname || "/").replace(/\/+$/, "") || "/";
+    const apiPath = LIST_API_BY_PATH[normalized] || scopedListApiForPath(normalized) || "/latest.json";
+    const query = String(search || "");
+    return `${apiPath}${query.startsWith("?") ? query : ""}`;
   }
 
   /* ============================== CSS ============================== */
@@ -3484,8 +3492,10 @@
 
   const listState = {
     apiPath: "",
+    loadedApiPath: "",
     moreUrl: null,
     loading: false,
+    requestSerial: 0,
     topics: [],
     usersById: {}
   };
@@ -3912,32 +3922,44 @@
   async function loadList(apiPath, force) {
     if (!apiPath) return;
     // 用列表 API 做缓存键：进帖子时 pathname 会变，但不应重拉会话列表
-    if (!force && listState.apiPath === apiPath && listState.topics.length) {
+    if (!force && listState.loadedApiPath === apiPath && listState.topics.length) {
       syncListActive();
       return;
     }
-    if (listState.loading) return;
+    if (!force && listState.loading && listState.apiPath === apiPath) return;
+    const requestSerial = ++listState.requestSerial;
     listState.loading = true;
     listState.apiPath = apiPath;
     try {
       const data = await api(apiPath);
+      if (requestSerial !== listState.requestSerial) return;
       applyListJson(data, false);
-    } catch {
+      listState.loadedApiPath = apiPath;
+    } catch (error) {
+      if (requestSerial !== listState.requestSerial) return;
+      console.error("[linuxdo-wecom] list load failed", { apiPath, error });
       const body = document.querySelector(".wecom-list-body");
-      if (body) body.innerHTML = `<div class="wecom-list-status">列表加载失败，请点右上角刷新重试</div>`;
+      const reason = error instanceof Error ? error.message : String(error);
+      if (body) body.innerHTML = `<div class="wecom-list-status">列表加载失败：${escapeHtml(reason)}</div>`;
     } finally {
-      listState.loading = false;
+      if (requestSerial === listState.requestSerial) listState.loading = false;
     }
   }
 
   async function loadMoreList() {
     if (!listState.moreUrl || listState.loading) return;
+    const requestSerial = ++listState.requestSerial;
     listState.loading = true;
     try {
       const data = await api(listState.moreUrl);
+      if (requestSerial !== listState.requestSerial) return;
       applyListJson(data, true);
-    } catch { /* 保留现状 */ } finally {
-      listState.loading = false;
+    } catch (error) {
+      if (requestSerial === listState.requestSerial) {
+        console.error("[linuxdo-wecom] load more topics failed", error);
+      }
+    } finally {
+      if (requestSerial === listState.requestSerial) listState.loading = false;
     }
   }
 
@@ -6240,7 +6262,7 @@
       loadTopic(topicIdFromPath(pathname));
       syncNewPostsFromDom();
     } else {
-      loadList(listApiForPath(pathname), false);
+      loadList(listApiForPath(pathname, location.search), false);
       renderChatEmpty();
     }
     syncListActive();
