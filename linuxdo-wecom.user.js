@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Linux DO · 企业微信 IM 外观
 // @namespace    https://linux.do/
-// @version      0.4.5
-// @description  将 Linux DO 换成企业微信 5.x 桌面端风格；保留原站数据、路由、通知与回复交互。
+// @version      0.5.1
+// @description  将 Linux DO 换成企业微信 5.x 桌面端风格；支持浅色/深色/跟随系统，并保留原站交互。
 // @author       Richy
 // @match        https://linux.do/*
 // @icon         https://linux.do/favicon.ico
@@ -36,6 +36,17 @@
   const WATERMARK_TILE_WIDTH = 300;
   const WATERMARK_TILE_HEIGHT = 160;
   const AVATAR_SOURCE_SIZE = 96;
+  const THEME_MODE_KEY = "linuxdo-wecom-theme-mode";
+  const THEME_MODE_VALUES = Object.freeze(["light", "dark", "system"]);
+  const DEFAULT_THEME_MODE = "light";
+  const IMAGE_VIEWER_DEFAULT_SCALE = 1;
+  const IMAGE_VIEWER_MIN_SCALE = 0.25;
+  const IMAGE_VIEWER_MAX_SCALE = 5;
+  const IMAGE_VIEWER_WHEEL_SENSITIVITY = 0.0015;
+  const IMAGE_VIEWER_LINE_HEIGHT_PX = 16;
+  const IMAGE_VIEWER_PERCENT_MULTIPLIER = 100;
+  const WHEEL_DELTA_LINE_MODE = 1;
+  const WHEEL_DELTA_PAGE_MODE = 2;
   const COMPOSER_READY_TIMEOUT_MS = 5000;
   const COMPOSER_SUBMIT_TIMEOUT_MS = 20000;
   const COMPOSER_INPUT_SETTLE_MS = 80;
@@ -119,7 +130,10 @@
     aitable: `<svg width="20" height="20" viewBox="0 0 24 24" fill="none"><rect x="4" y="4.5" width="16" height="15" rx="2" stroke="currentColor" stroke-width="1.7"/><path d="M4 9.5h16M9.6 9.5v10M15.4 9.5v10" stroke="currentColor" stroke-width="1.7"/></svg>`,
     aimic: `<svg width="20" height="20" viewBox="0 0 24 24" fill="none"><rect x="9" y="3.5" width="6" height="11" rx="3" stroke="currentColor" stroke-width="1.7"/><path d="M5.5 11.5a6.5 6.5 0 0 0 13 0M12 18v2.5" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>`,
     monitor: `<svg width="16" height="16" viewBox="0 0 24 24" fill="none"><rect x="3.5" y="5" width="17" height="12" rx="2" stroke="currentColor" stroke-width="1.6"/><path d="M9 20.5h6M12 17v3.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>`,
-    at: `<svg width="18" height="18" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="3.2" stroke="currentColor" stroke-width="1.6"/><path d="M15.2 8.8v4.4a2.4 2.4 0 0 0 4.8 0V12a8 8 0 1 0-3.4 6.6" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>`
+    at: `<svg width="18" height="18" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="3.2" stroke="currentColor" stroke-width="1.6"/><path d="M15.2 8.8v4.4a2.4 2.4 0 0 0 4.8 0V12a8 8 0 1 0-3.4 6.6" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>`,
+    moon: `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M20 15.4A8.2 8.2 0 0 1 8.6 4a8.2 8.2 0 1 0 11.4 11.4Z" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>`,
+    sun: `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="3.5" stroke="currentColor" stroke-width="1.7"/><path d="M12 3.5v2M12 18.5v2M3.5 12h2M18.5 12h2M6 6l1.4 1.4M16.6 16.6L18 18M18 6l-1.4 1.4M7.4 16.6L6 18" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>`,
+    monitorSmall: `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="3.5" y="5" width="17" height="12" rx="2" stroke="currentColor" stroke-width="1.7"/><path d="M9 20.5h6M12 17v3.5" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>`
   };
   ICONS.chat = ICONS.msg;
   ICONS.list = ICONS.msg;
@@ -588,7 +602,7 @@
       --d-hover: var(--wc-hover);
     }
 
-    /* 整站写死光明：覆盖系统/站点暗色偏好 */
+    /* 整站颜色模式：由运行时同步 html/body 与站点 stylesheet */
     html.${ROOT_CLASS},
     html.${ROOT_CLASS} body {
       color-scheme: light !important;
@@ -906,6 +920,36 @@
     .wecom-rail-item.active { color: var(--wc-blue); background: #FFFFFF; box-shadow: 0 1px 4px rgba(31,35,41,.06); }
     .wecom-rail-item.active svg { color: var(--wc-blue); }
     .wecom-rail-bottom { width: 100%; flex-shrink: 0; padding: 4px 8px 0; }
+    .wecom-theme-controls { position: relative; display: flex; flex-direction: column; gap: 1px; }
+    .wecom-theme-toggle,
+    .wecom-theme-options { position: relative; }
+    .wecom-theme-toggle .wecom-theme-icon,
+    .wecom-theme-options .wecom-theme-icon { display: inline-flex; align-items: center; justify-content: center; flex: 0 0 auto; }
+    .wecom-theme-options { opacity: .82; }
+    .wecom-theme-options:hover { opacity: 1; }
+    .wecom-theme-menu[hidden] { display: none !important; }
+    .wecom-theme-menu {
+      position: fixed;
+      left: calc(var(--wc-nav) + 10px);
+      bottom: 12px;
+      z-index: 1200;
+      width: 190px;
+      padding: 7px;
+      border: 1px solid var(--wc-border);
+      border-radius: 10px;
+      background: var(--wc-bg);
+      box-shadow: 0 12px 30px rgba(31, 35, 41, .18);
+      font-family: var(--wc-font);
+    }
+    .wecom-theme-menu-title { padding: 5px 8px 7px; color: var(--wc-text-3); font-size: 11px; }
+    .wecom-theme-menu button {
+      width: 100%; height: 34px; display: flex; align-items: center; gap: 8px;
+      padding: 0 8px; border: 0; border-radius: 7px; background: transparent;
+      color: var(--wc-text-2); font: 13px var(--wc-font); text-align: left; cursor: pointer;
+    }
+    .wecom-theme-menu button:hover { background: var(--wc-hover); color: var(--wc-text); }
+    .wecom-theme-menu button.is-active { background: var(--wc-accent-soft); color: var(--wc-accent); font-weight: 600; }
+    .wecom-theme-menu button svg { width: 16px; height: 16px; flex: 0 0 auto; }
     .wecom-rail-more.is-on { color: var(--wc-blue); background: #FFFFFF; box-shadow: 0 1px 4px rgba(31,35,41,.06); }
     .wecom-rail-more.is-on svg { color: var(--wc-blue); }
     /* 右边缘拖拽柄：左右拉伸 rail */
@@ -1472,6 +1516,12 @@
       border-radius: 6px;
       object-fit: contain;
       box-shadow: 0 18px 60px rgba(0, 0, 0, .42);
+      transform: scale(var(--wecom-image-viewer-scale, 1));
+      transform-origin: center;
+      transition: transform 80ms ease-out;
+      user-select: none;
+      -webkit-user-drag: none;
+      will-change: transform;
     }
     .wecom-image-viewer-close {
       position: fixed;
@@ -1496,6 +1546,30 @@
       background: rgba(255, 255, 255, .24);
     }
     .wecom-image-viewer-close b { font-size: 24px; font-weight: 300; line-height: 1; }
+    .wecom-image-viewer-zoom {
+      position: fixed;
+      top: 20px;
+      left: 24px;
+      z-index: 2;
+      height: 40px;
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 0 13px;
+      border: 1px solid rgba(255, 255, 255, .18);
+      border-radius: 8px;
+      background: rgba(0, 0, 0, .28);
+      color: rgba(255, 255, 255, .68);
+      font-size: 12px;
+      pointer-events: none;
+    }
+    .wecom-image-viewer-zoom strong {
+      min-width: 38px;
+      color: #FFFFFF;
+      font-size: 13px;
+      font-variant-numeric: tabular-nums;
+      text-align: right;
+    }
     .wecom-image-viewer-caption {
       position: fixed;
       left: 24px;
@@ -1535,6 +1609,7 @@
       .${ROOT_CLASS}.${LOCK_CLASS} .wecom-chat-panel { left: var(--wc-nav); }
       .wecom-image-viewer-stage { inset: 68px 12px 44px; }
       .wecom-image-viewer-close { top: 14px; right: 14px; }
+      .wecom-image-viewer-zoom { top: 14px; left: 14px; }
     }
   `;
 
@@ -2517,6 +2592,500 @@
     }
   `;
 
+  /* 企业微信深色模式：使用官方深色配色表中的分层灰阶与 #338CFF 强调色。 */
+  const WECOM_DARK_REFINEMENTS = String.raw`
+    .${ROOT_CLASS}.wecom-dark {
+      color-scheme: dark !important;
+      --wc-blue: #338CFF;
+      --wc-blue-hover: #4D9CFF;
+      --wc-blue-soft: rgba(51, 140, 255, .16);
+      --wc-blue-chip: #173153;
+      --wc-title: #338CFF;
+      --wc-accent: #338CFF;
+      --wc-accent-soft: rgba(51, 140, 255, .16);
+      --wc-nav2-bg: #101011;
+      --wc-nav2-border: #2A2C2E;
+      --wc-text: #F7F7F7;
+      --wc-text-2: rgba(250, 252, 255, .72);
+      --wc-text-3: rgba(250, 252, 255, .55);
+      --wc-text-4: rgba(250, 252, 255, .4);
+      --wc-bg: #101011;
+      --wc-chat-bg: #101011;
+      --wc-hover: #272829;
+      --wc-active: rgba(51, 140, 255, .25);
+      --wc-bubble-other: #303031;
+      --wc-bubble-me: #093159;
+      --wc-border: rgba(255, 255, 255, .1);
+      --wc-border-strong: rgba(255, 255, 255, .2);
+      --wc-danger: #FF5962;
+      --wc-rail-bg: #000000;
+      --wc-surface-0: #000000;
+      --wc-surface-1: #101011;
+      --wc-surface-2: #181819;
+      --wc-surface-3: #202021;
+      --wc-surface-4: #2C2C2D;
+      --wc-divider: #2A2C2E;
+      --primary: #F7F7F7;
+      --primary-medium: rgba(250, 252, 255, .72);
+      --primary-low: rgba(250, 252, 255, .55);
+      --secondary: #101011;
+      --tertiary: #338CFF;
+      --header_background: #101011;
+      --header_primary: #F7F7F7;
+      --d-hover: #272829;
+      --d-sidebar-background: #101011;
+      --d-sidebar-border-color: #2A2C2E;
+    }
+
+    html.${ROOT_CLASS}.wecom-dark,
+    html.${ROOT_CLASS}.wecom-dark body {
+      color-scheme: dark !important;
+      background: var(--wc-surface-0) !important;
+      color: var(--wc-text) !important;
+    }
+    html.${ROOT_CLASS}.wecom-dark #main-outlet-wrapper,
+    html.${ROOT_CLASS}.wecom-dark #main-outlet {
+      background: var(--wc-surface-0) !important;
+      color: var(--wc-text) !important;
+    }
+
+    /* 原生展开栏与通知菜单 */
+    html.${ROOT_CLASS}.wecom-dark body .sidebar-wrapper {
+      background-color: var(--wc-surface-1) !important;
+      border-right-color: var(--wc-divider) !important;
+      color: var(--wc-text) !important;
+      --primary: #F7F7F7;
+      --primary-medium: rgba(250, 252, 255, .72);
+      --primary-low: rgba(250, 252, 255, .55);
+      --primary-low-mid: #595B5E;
+      --primary-very-low: #1F2022;
+      --primary-50: #161718;
+      --primary-100: #1B1C1D;
+      --primary-200: #2A2C2E;
+      --primary-300: #3F4143;
+      --secondary: #101011;
+      --tertiary: #338CFF;
+      --quaternary: #338CFF;
+      --d-hover: #272829;
+      --d-sidebar-background: #101011;
+      --d-sidebar-border-color: #2A2C2E;
+    }
+    html.${ROOT_CLASS}.wecom-dark body .sidebar-wrapper .sidebar-section-link {
+      color: rgba(250, 252, 255, .72) !important;
+    }
+    html.${ROOT_CLASS}.wecom-dark body .sidebar-wrapper .sidebar-section-link:hover {
+      background-color: #272829 !important;
+      color: #F7F7F7 !important;
+    }
+    html.${ROOT_CLASS}.wecom-dark body .sidebar-wrapper .sidebar-section-link.active {
+      background-color: rgba(51, 140, 255, .2) !important;
+      color: #338CFF !important;
+    }
+    html.${ROOT_CLASS}.wecom-dark .user-menu.wecom-user-menu-float,
+    html.${ROOT_CLASS}.wecom-dark .user-menu.revamped.menu-panel.wecom-user-menu-float,
+    html.${ROOT_CLASS}.wecom-dark .user-menu.menu-panel.wecom-user-menu-float {
+      background: var(--wc-surface-3) !important;
+      border-color: var(--wc-divider) !important;
+      color: var(--wc-text) !important;
+      box-shadow: 0 12px 32px rgba(0, 0, 0, .45) !important;
+    }
+    html.${ROOT_CLASS}.wecom-dark .user-menu.wecom-user-menu-float * {
+      color: inherit;
+      border-color: var(--wc-divider);
+    }
+
+    /* 工作台导航 */
+    html.${ROOT_CLASS}.wecom-dark .wecom-rail {
+      background: var(--wc-surface-0) !important;
+      border-right-color: var(--wc-divider) !important;
+      color: var(--wc-text-2) !important;
+    }
+    html.${ROOT_CLASS}.wecom-dark .wecom-rail-current-user-name,
+    html.${ROOT_CLASS}.wecom-dark .wecom-current-user-name {
+      color: var(--wc-text) !important;
+    }
+    html.${ROOT_CLASS}.wecom-dark .wecom-rail-avatar {
+      background: #338CFF !important;
+      color: #FFFFFF !important;
+    }
+    html.${ROOT_CLASS}.wecom-dark .wecom-rail-avatar.is-notif-pinned {
+      box-shadow: 0 0 0 2px var(--wc-surface-0), 0 0 0 4px #2DC252 !important;
+    }
+    html.${ROOT_CLASS}.wecom-dark .wecom-rail-avatar-badge {
+      box-shadow: 0 0 0 2px var(--wc-surface-0) !important;
+    }
+    html.${ROOT_CLASS}.wecom-dark .wecom-rail-org-chip {
+      background: rgba(255, 255, 255, .05);
+    }
+    html.${ROOT_CLASS}.wecom-dark .wecom-rail-org-chip:hover {
+      background: rgba(255, 255, 255, .1);
+    }
+    html.${ROOT_CLASS}.wecom-dark .wecom-rail-org-logo {
+      background: linear-gradient(145deg, #4D9CFF, #235BA3);
+    }
+    html.${ROOT_CLASS}.wecom-dark .wecom-rail-item,
+    html.${ROOT_CLASS}.wecom-dark .wecom-rail-group-item {
+      color: rgba(250, 252, 255, .72) !important;
+    }
+    html.${ROOT_CLASS}.wecom-dark .wecom-rail-item svg,
+    html.${ROOT_CLASS}.wecom-dark .wecom-rail-group-item svg {
+      color: rgba(250, 252, 255, .55) !important;
+    }
+    html.${ROOT_CLASS}.wecom-dark .wecom-rail-item:hover,
+    html.${ROOT_CLASS}.wecom-dark .wecom-rail-group-item:hover {
+      background: rgba(255, 255, 255, .07) !important;
+    }
+    html.${ROOT_CLASS}.wecom-dark .wecom-rail-item.active,
+    html.${ROOT_CLASS}.wecom-dark .wecom-rail-more.is-on {
+      background: rgba(51, 140, 255, .2) !important;
+      color: #338CFF !important;
+      box-shadow: none !important;
+    }
+    html.${ROOT_CLASS}.wecom-dark .wecom-rail-item.active svg,
+    html.${ROOT_CLASS}.wecom-dark .wecom-rail-more.is-on svg {
+      color: #338CFF !important;
+    }
+    html.${ROOT_CLASS}.wecom-dark .wecom-theme-toggle.is-dark {
+      background: rgba(51, 140, 255, .2) !important;
+      color: #338CFF !important;
+    }
+    html.${ROOT_CLASS}.wecom-dark .wecom-theme-toggle.is-dark svg {
+      color: #338CFF !important;
+    }
+    html.${ROOT_CLASS}.wecom-dark .wecom-rail-group-title,
+    html.${ROOT_CLASS}.wecom-dark .wecom-group-unread,
+    html.${ROOT_CLASS}.wecom-dark .wecom-rail-bottom .wecom-rail-item {
+      color: var(--wc-text-3) !important;
+    }
+    html.${ROOT_CLASS}.wecom-dark .wecom-rail-group-item svg,
+    html.${ROOT_CLASS}.wecom-dark .wecom-rail-item svg {
+      color: var(--wc-text-2) !important;
+    }
+    html.${ROOT_CLASS}.wecom-dark .wecom-rail-badge {
+      box-shadow: 0 0 0 2px var(--wc-surface-0) !important;
+    }
+    html.${ROOT_CLASS}.wecom-dark .wecom-rail-resizer:hover,
+    html.${ROOT_CLASS}.wecom-dark .wecom-rail-resizer.dragging,
+    html.${ROOT_CLASS}.wecom-dark .wecom-list-resizer:hover,
+    html.${ROOT_CLASS}.wecom-dark .wecom-list-resizer.dragging {
+      background: rgba(51, 140, 255, .35) !important;
+    }
+
+    /* 外观切换菜单 */
+    html.${ROOT_CLASS}.wecom-dark .wecom-theme-menu {
+      background: var(--wc-surface-3) !important;
+      border-color: var(--wc-divider) !important;
+      box-shadow: 0 14px 36px rgba(0, 0, 0, .48) !important;
+      color: var(--wc-text) !important;
+    }
+    html.${ROOT_CLASS}.wecom-dark .wecom-theme-menu-title,
+    html.${ROOT_CLASS}.wecom-dark .wecom-theme-menu button {
+      color: var(--wc-text-2) !important;
+    }
+    html.${ROOT_CLASS}.wecom-dark .wecom-theme-menu button:hover {
+      background: rgba(255, 255, 255, .08) !important;
+      color: var(--wc-text) !important;
+    }
+    html.${ROOT_CLASS}.wecom-dark .wecom-theme-menu button.is-active {
+      background: rgba(51, 140, 255, .2) !important;
+      color: #338CFF !important;
+    }
+
+    /* 会话列表 */
+    html.${ROOT_CLASS}.wecom-dark .wecom-list-panel {
+      background: var(--wc-surface-2) !important;
+      border-right-color: var(--wc-divider) !important;
+      color: var(--wc-text) !important;
+    }
+    html.${ROOT_CLASS}.wecom-dark .wecom-list-search form {
+      background: var(--wc-surface-4) !important;
+      color: var(--wc-text-3) !important;
+    }
+    html.${ROOT_CLASS}.wecom-dark .wecom-list-search form:focus-within {
+      background: var(--wc-surface-3) !important;
+      box-shadow: inset 0 0 0 1px rgba(51, 140, 255, .65) !important;
+    }
+    html.${ROOT_CLASS}.wecom-dark .wecom-list-search input,
+    html.${ROOT_CLASS}.wecom-dark .wecom-list-search form > input[type="search"] {
+      color: var(--wc-text) !important;
+    }
+    html.${ROOT_CLASS}.wecom-dark .wecom-list-search input::placeholder {
+      color: var(--wc-text-3) !important;
+    }
+    html.${ROOT_CLASS}.wecom-dark .wecom-list-add,
+    html.${ROOT_CLASS}.wecom-dark .wecom-chip-icon {
+      background: var(--wc-surface-4) !important;
+      color: var(--wc-text-2) !important;
+    }
+    html.${ROOT_CLASS}.wecom-dark .wecom-list-add:hover,
+    html.${ROOT_CLASS}.wecom-dark .wecom-chip-icon:hover {
+      background: #3F4143 !important;
+    }
+    html.${ROOT_CLASS}.wecom-dark .wecom-list-chips {
+      background: var(--wc-surface-3) !important;
+    }
+    html.${ROOT_CLASS}.wecom-dark .wecom-chip {
+      color: var(--wc-text-2) !important;
+    }
+    html.${ROOT_CLASS}.wecom-dark .wecom-chip.active {
+      background: var(--wc-surface-4) !important;
+      color: var(--wc-text) !important;
+      box-shadow: 0 1px 3px rgba(0, 0, 0, .35) !important;
+    }
+    html.${ROOT_CLASS}.wecom-dark .wecom-list-nav {
+      background: var(--wc-surface-3) !important;
+      border-color: var(--wc-divider) !important;
+      box-shadow: 0 10px 28px rgba(0, 0, 0, .42) !important;
+    }
+    html.${ROOT_CLASS}.wecom-dark .wecom-list-nav a {
+      background: var(--wc-surface-2) !important;
+      border-color: var(--wc-divider) !important;
+      color: var(--wc-text-2) !important;
+    }
+    html.${ROOT_CLASS}.wecom-dark .wecom-list-nav a:hover {
+      background: var(--wc-hover) !important;
+      color: var(--wc-text) !important;
+    }
+    html.${ROOT_CLASS}.wecom-dark .wecom-list-nav a.active {
+      background: rgba(51, 140, 255, .2) !important;
+      border-color: rgba(51, 140, 255, .45) !important;
+      color: #338CFF !important;
+    }
+    html.${ROOT_CLASS}.wecom-dark .wecom-conv {
+      color: var(--wc-text) !important;
+    }
+    html.${ROOT_CLASS}.wecom-dark .wecom-conv:hover {
+      background: var(--wc-hover) !important;
+    }
+    html.${ROOT_CLASS}.wecom-dark .wecom-conv.active {
+      background: #3D7ACC !important;
+    }
+    html.${ROOT_CLASS}.wecom-dark .wecom-conv-name {
+      color: var(--wc-text) !important;
+    }
+    html.${ROOT_CLASS}.wecom-dark .wecom-conv-msg,
+    html.${ROOT_CLASS}.wecom-dark .wecom-conv-time {
+      color: var(--wc-text-3) !important;
+    }
+    html.${ROOT_CLASS}.wecom-dark .wecom-conv.active .wecom-conv-name,
+    html.${ROOT_CLASS}.wecom-dark .wecom-conv.active .wecom-conv-msg,
+    html.${ROOT_CLASS}.wecom-dark .wecom-conv.active .wecom-conv-time {
+      color: #FFFFFF !important;
+    }
+    html.${ROOT_CLASS}.wecom-dark .wecom-conv-tag {
+      background: rgba(51, 140, 255, .2) !important;
+      border-color: rgba(51, 140, 255, .45) !important;
+      color: #80B7FF !important;
+    }
+    html.${ROOT_CLASS}.wecom-dark .wecom-conv.active .wecom-conv-tag {
+      background: rgba(255, 255, 255, .13) !important;
+      border-color: rgba(255, 255, 255, .35) !important;
+      color: #FFFFFF !important;
+    }
+    html.${ROOT_CLASS}.wecom-dark .wecom-conv-avatar.is-group,
+    html.${ROOT_CLASS}.wecom-dark .wecom-conv-avatar.is-grid-mask {
+      background: var(--wc-surface-4) !important;
+    }
+    html.${ROOT_CLASS}.wecom-dark .wecom-list-status {
+      color: var(--wc-text-3) !important;
+    }
+    html.${ROOT_CLASS}.wecom-dark .wecom-list-body::-webkit-scrollbar-thumb,
+    html.${ROOT_CLASS}.wecom-dark .wecom-chat-body::-webkit-scrollbar-thumb {
+      background: #3F4143 !important;
+    }
+
+    /* 聊天区与消息气泡 */
+    html.${ROOT_CLASS}.wecom-dark .wecom-chat-panel {
+      background: var(--wc-surface-1) !important;
+      color: var(--wc-text) !important;
+    }
+    html.${ROOT_CLASS}.wecom-dark .wecom-chat-header {
+      background: var(--wc-surface-2) !important;
+      border-bottom-color: var(--wc-divider) !important;
+    }
+    html.${ROOT_CLASS}.wecom-dark .wecom-chat-title {
+      color: var(--wc-text) !important;
+    }
+    html.${ROOT_CLASS}.wecom-dark .wecom-chat-sub,
+    html.${ROOT_CLASS}.wecom-dark .wecom-chat-count {
+      color: var(--wc-text-3) !important;
+    }
+    html.${ROOT_CLASS}.wecom-dark .wecom-chat-chip {
+      background: rgba(51, 140, 255, .2) !important;
+      border-color: rgba(51, 140, 255, .45) !important;
+      color: #80B7FF !important;
+    }
+    html.${ROOT_CLASS}.wecom-dark .wecom-icon-btn {
+      color: var(--wc-text-2) !important;
+    }
+    html.${ROOT_CLASS}.wecom-dark .wecom-icon-btn:hover {
+      background: rgba(255, 255, 255, .08) !important;
+      color: var(--wc-text) !important;
+    }
+    html.${ROOT_CLASS}.wecom-dark .wecom-chat-body {
+      background-color: var(--wc-surface-1) !important;
+      color: var(--wc-text) !important;
+    }
+    html.${ROOT_CLASS}.wecom-dark .wecom-msg-name,
+    html.${ROOT_CLASS}.wecom-dark .wecom-msg-meta,
+    html.${ROOT_CLASS}.wecom-dark .wecom-msg-time-sep {
+      color: var(--wc-text-3) !important;
+    }
+    html.${ROOT_CLASS}.wecom-dark .wecom-msg-bubble {
+      color: var(--wc-text) !important;
+    }
+    html.${ROOT_CLASS}.wecom-dark .wecom-msg-other .wecom-msg-bubble {
+      background: #303031 !important;
+      box-shadow: none !important;
+    }
+    html.${ROOT_CLASS}.wecom-dark .wecom-msg-me .wecom-msg-bubble {
+      background: #093159 !important;
+    }
+    html.${ROOT_CLASS}.wecom-dark .wecom-msg-other .wecom-msg-bubble::before {
+      border-right-color: #303031 !important;
+    }
+    html.${ROOT_CLASS}.wecom-dark .wecom-msg-me .wecom-msg-bubble::before {
+      border-left-color: #093159 !important;
+    }
+    html.${ROOT_CLASS}.wecom-dark .wecom-msg-bubble pre {
+      background: rgba(255, 255, 255, .07) !important;
+      color: var(--wc-text) !important;
+    }
+    html.${ROOT_CLASS}.wecom-dark .wecom-msg-bubble blockquote {
+      background: rgba(51, 140, 255, .12) !important;
+    }
+    html.${ROOT_CLASS}.wecom-dark .wecom-msg-bubble a {
+      color: #80B7FF !important;
+    }
+    html.${ROOT_CLASS}.wecom-dark .wecom-msg-tool {
+      color: var(--wc-text-2) !important;
+    }
+    html.${ROOT_CLASS}.wecom-dark .wecom-msg-tool:hover,
+    html.${ROOT_CLASS}.wecom-dark .wecom-msg-tool.liked {
+      color: #338CFF !important;
+    }
+    html.${ROOT_CLASS}.wecom-dark .wecom-msg-tools {
+      background: var(--wc-surface-3) !important;
+      border-color: var(--wc-divider) !important;
+      box-shadow: 0 4px 14px rgba(0, 0, 0, .35) !important;
+    }
+    html.${ROOT_CLASS}.wecom-dark .wecom-chat-empty,
+    html.${ROOT_CLASS}.wecom-dark .wecom-chat-error,
+    html.${ROOT_CLASS}.wecom-dark .wecom-chat-loading {
+      color: var(--wc-text-3) !important;
+    }
+
+    /* 置顶消息、水印与回复输入区 */
+    html.${ROOT_CLASS}.wecom-dark .wecom-pinned-banner {
+      background: #19191A !important;
+      border-color: #295794 !important;
+      color: var(--wc-text-2) !important;
+    }
+    html.${ROOT_CLASS}.wecom-dark .wecom-pinned-content b {
+      color: var(--wc-text) !important;
+    }
+    html.${ROOT_CLASS}.wecom-dark .wecom-pinned-close {
+      color: var(--wc-text-3) !important;
+    }
+    html.${ROOT_CLASS}.wecom-dark .wecom-watermark-panel {
+      background: var(--wc-surface-3) !important;
+      border-color: var(--wc-divider) !important;
+      color: var(--wc-text) !important;
+      box-shadow: 0 14px 36px rgba(0, 0, 0, .5) !important;
+    }
+    html.${ROOT_CLASS}.wecom-dark .wecom-watermark-head strong,
+    html.${ROOT_CLASS}.wecom-dark .wecom-watermark-field > span {
+      color: var(--wc-text) !important;
+    }
+    html.${ROOT_CLASS}.wecom-dark .wecom-watermark-close:hover {
+      background: rgba(255, 255, 255, .08) !important;
+    }
+    html.${ROOT_CLASS}.wecom-dark .wecom-watermark-text {
+      background: var(--wc-surface-4) !important;
+      border-color: var(--wc-divider) !important;
+      color: var(--wc-text) !important;
+    }
+    html.${ROOT_CLASS}.wecom-dark .wecom-watermark-hint,
+    html.${ROOT_CLASS}.wecom-dark .wecom-watermark-close,
+    html.${ROOT_CLASS}.wecom-dark .wecom-watermark-actions button {
+      color: var(--wc-text-3) !important;
+    }
+    html.${ROOT_CLASS}.wecom-dark .wecom-watermark-actions button {
+      background: var(--wc-surface-4) !important;
+      border-color: var(--wc-divider) !important;
+    }
+    html.${ROOT_CLASS}.wecom-dark .wecom-watermark-actions .wecom-watermark-save {
+      background: #338CFF !important;
+      border-color: #338CFF !important;
+      color: #FFFFFF !important;
+    }
+    html.${ROOT_CLASS}.wecom-dark .wecom-composer {
+      background: var(--wc-surface-1) !important;
+    }
+    html.${ROOT_CLASS}.wecom-dark .wecom-composer-card {
+      background: var(--wc-surface-2) !important;
+      border-color: var(--wc-divider) !important;
+      box-shadow: none !important;
+    }
+    html.${ROOT_CLASS}.wecom-dark .wecom-composer-card:hover {
+      border-color: rgba(51, 140, 255, .55) !important;
+    }
+    html.${ROOT_CLASS}.wecom-dark textarea.wecom-chat-compose,
+    html.${ROOT_CLASS}.wecom-dark .wecom-chat-compose {
+      color: var(--wc-text) !important;
+      caret-color: #338CFF;
+    }
+    html.${ROOT_CLASS}.wecom-dark textarea.wecom-chat-compose::placeholder {
+      color: var(--wc-text-3) !important;
+    }
+    html.${ROOT_CLASS}.wecom-dark .wecom-compose-status {
+      color: var(--wc-text-3) !important;
+    }
+    html.${ROOT_CLASS}.wecom-dark .wecom-reply-target {
+      background: rgba(255, 255, 255, .05) !important;
+      color: var(--wc-text-2) !important;
+    }
+    html.${ROOT_CLASS}.wecom-dark .wecom-send-btn:not(:disabled) {
+      color: #338CFF !important;
+    }
+    html.${ROOT_CLASS}.wecom-dark .wecom-send-btn:not(:disabled):hover {
+      background: rgba(51, 140, 255, .14) !important;
+    }
+    html.${ROOT_CLASS}.wecom-dark .wecom-composer-tools .hint {
+      color: var(--wc-text-3) !important;
+    }
+    html.${ROOT_CLASS}.wecom-dark .wecom-mode-fab {
+      background: #338CFF !important;
+      box-shadow: 0 5px 18px rgba(51, 140, 255, .32) !important;
+    }
+
+    /* 群成员栏 */
+    html.${ROOT_CLASS}.wecom-dark .wecom-member-panel {
+      background: var(--wc-surface-2) !important;
+      border-left-color: var(--wc-divider) !important;
+      color: var(--wc-text) !important;
+    }
+    html.${ROOT_CLASS}.wecom-dark .wecom-member-header {
+      border-bottom-color: var(--wc-divider) !important;
+      color: var(--wc-text-2) !important;
+    }
+    html.${ROOT_CLASS}.wecom-dark .wecom-member-actions,
+    html.${ROOT_CLASS}.wecom-dark .wecom-member-name {
+      color: var(--wc-text-2) !important;
+    }
+    html.${ROOT_CLASS}.wecom-dark .wecom-member-role {
+      background: var(--wc-surface-4) !important;
+      color: var(--wc-text-3) !important;
+    }
+
+    html.${ROOT_CLASS}.wecom-dark #d-splash {
+      background: var(--wc-surface-0) !important;
+    }
+    html.${ROOT_CLASS}.wecom-dark #d-splash .dots {
+      background-color: #338CFF !important;
+    }
+  `;
+
   /* ============================== 基础设施 ============================== */
 
   function injectStyle() {
@@ -2527,7 +3096,7 @@
       (document.head || document.documentElement).appendChild(style);
     }
     // 始终刷新，避免旧版 CSS（挡住回复按钮）残留
-    style.textContent = `${RAW_CSS}\n${WECOM_REFINEMENTS}\n${WECOM_LATEST_REFINEMENTS}`;
+    style.textContent = `${RAW_CSS}\n${WECOM_REFINEMENTS}\n${WECOM_LATEST_REFINEMENTS}\n${WECOM_DARK_REFINEMENTS}`;
   }
 
   let faviconObserver = null;
@@ -2628,58 +3197,165 @@
       document.documentElement.classList.contains("dingtalk-im-theme");
   }
 
-  /* ============================== 整站强制光明模式 ============================== */
+  /* ============================== 颜色模式 ============================== */
 
-  let lightSchemeObserver = null;
-  let forcingLight = false;
+  let colorSchemeObserver = null;
+  let systemSchemeMedia = null;
+  let applyingColorMode = false;
+  let transientThemeMode = null;
 
-  /** Discourse 用 link.light-scheme / link.dark-scheme 的 media 切换明暗 */
-  function forceSiteLightMode() {
-    if (otherThemeActive()) return;
-
-    forcingLight = true;
-    try {
-      document.documentElement.style.colorScheme = "light";
-      if (document.body) document.body.style.colorScheme = "light";
-
-      for (const link of document.querySelectorAll("link.dark-scheme, link[class*='dark-scheme']")) {
-        if (link.media !== "none") link.media = "none";
-        if (!link.disabled) link.disabled = true;
-      }
-      for (const link of document.querySelectorAll("link.light-scheme, link[class*='light-scheme']")) {
-        if (link.disabled) link.disabled = false;
-        if (link.media !== "all") link.media = "all";
-      }
-
-      // 个别主题会在 html/body 挂暗色 class
-      document.documentElement.classList.remove("dark", "dark-scheme", "scheme-dark");
-      if (document.body) {
-        document.body.classList.remove("dark", "dark-scheme", "scheme-dark");
-      }
-    } finally {
-      forcingLight = false;
-    }
-
-    ensureLightSchemeObserver();
+  function normalizeThemeMode(mode) {
+    return THEME_MODE_VALUES.includes(mode) ? mode : DEFAULT_THEME_MODE;
   }
 
-  function ensureLightSchemeObserver() {
-    if (lightSchemeObserver || typeof MutationObserver === "undefined") return;
-    lightSchemeObserver = new MutationObserver(() => {
-      if (forcingLight || otherThemeActive()) return;
-      forceSiteLightMode();
+  function getThemeMode() {
+    if (transientThemeMode) return transientThemeMode;
+    try {
+      const saved = localStorage.getItem(THEME_MODE_KEY);
+      if (saved) return normalizeThemeMode(saved);
+      // 兼容早期测试版可能使用的布尔开关。
+      const legacy = localStorage.getItem("linuxdo-wecom-dark-mode");
+      if (legacy === "1" || legacy === "true") return "dark";
+    } catch { /* localStorage 不可用时使用默认模式 */ }
+    return DEFAULT_THEME_MODE;
+  }
+
+  function systemPrefersDark() {
+    try {
+      return !!window.matchMedia?.("(prefers-color-scheme: dark)").matches;
+    } catch {
+      return false;
+    }
+  }
+
+  function isDarkMode() {
+    const mode = getThemeMode();
+    return mode === "dark" || (mode === "system" && systemPrefersDark());
+  }
+
+  function setThemeMode(mode) {
+    const normalized = normalizeThemeMode(mode);
+    try {
+      localStorage.setItem(THEME_MODE_KEY, normalized);
+      transientThemeMode = null;
+    } catch {
+      // 私密浏览或禁用存储时仍保持本页选择，避免点击后立即跳回默认模式。
+      transientThemeMode = normalized;
+    }
+    applySiteColorMode();
+    syncThemeControls();
+  }
+
+  function applySchemeLinks(dark) {
+    const darkMedia = dark ? "all" : "none";
+    const lightMedia = dark ? "none" : "all";
+    for (const link of document.querySelectorAll("link.dark-scheme, link[class*='dark-scheme']")) {
+      if (link.media !== darkMedia) link.media = darkMedia;
+      if (link.disabled !== !dark) link.disabled = !dark;
+    }
+    for (const link of document.querySelectorAll("link.light-scheme, link[class*='light-scheme']")) {
+      if (link.media !== lightMedia) link.media = lightMedia;
+      if (link.disabled !== dark) link.disabled = dark;
+    }
+  }
+
+  function schemeLinksMatch(dark) {
+    const darkMedia = dark ? "all" : "none";
+    const lightMedia = dark ? "none" : "all";
+    const darkLinks = document.querySelectorAll("link.dark-scheme, link[class*='dark-scheme']");
+    const lightLinks = document.querySelectorAll("link.light-scheme, link[class*='light-scheme']");
+    const darkReady = [...darkLinks].every((link) => link.media === darkMedia && link.disabled === !dark);
+    const lightReady = [...lightLinks].every((link) => link.media === lightMedia && link.disabled === dark);
+    return darkReady && lightReady;
+  }
+
+  function siteColorModeMatches(dark) {
+    const scheme = dark ? "dark" : "light";
+    const root = document.documentElement;
+    const rootReady = root.style.colorScheme === scheme &&
+      root.classList.contains("wecom-dark") === dark &&
+      root.classList.contains("dark") === dark &&
+      root.classList.contains("dark-scheme") === dark &&
+      root.classList.contains("scheme-dark") === dark &&
+      root.getAttribute("data-color-mode") === scheme;
+    if (!rootReady || !schemeLinksMatch(dark)) return false;
+    if (!document.body) return true;
+    const body = document.body;
+    return body.style.colorScheme === scheme &&
+      body.classList.contains("wecom-dark") === dark &&
+      body.classList.contains("dark") === dark &&
+      body.classList.contains("dark-scheme") === dark &&
+      body.classList.contains("scheme-dark") === dark &&
+      body.getAttribute("data-color-mode") === scheme;
+  }
+
+  /** 同步站点 stylesheet、html/body 属性及企业微信自绘面板。 */
+  function applySiteColorMode() {
+    if (otherThemeActive()) return;
+    const dark = isDarkMode();
+    const root = document.documentElement;
+    const scheme = dark ? "dark" : "light";
+    applyingColorMode = true;
+    try {
+      if (root.style.colorScheme !== scheme) root.style.colorScheme = scheme;
+      root.classList.toggle("wecom-dark", dark);
+      root.classList.toggle("dark", dark);
+      root.classList.toggle("dark-scheme", dark);
+      root.classList.toggle("scheme-dark", dark);
+      if (root.getAttribute("data-color-mode") !== scheme) root.setAttribute("data-color-mode", scheme);
+      if (document.body) {
+        if (document.body.style.colorScheme !== scheme) document.body.style.colorScheme = scheme;
+        document.body.classList.toggle("wecom-dark", dark);
+        document.body.classList.toggle("dark", dark);
+        document.body.classList.toggle("dark-scheme", dark);
+        document.body.classList.toggle("scheme-dark", dark);
+        if (document.body.getAttribute("data-color-mode") !== scheme) {
+          document.body.setAttribute("data-color-mode", scheme);
+        }
+      }
+      applySchemeLinks(dark);
+    } finally {
+      applyingColorMode = false;
+    }
+    ensureColorSchemeObserver();
+    ensureSystemSchemeListener();
+    syncThemeControls();
+  }
+
+  function ensureColorSchemeObserver() {
+    if (colorSchemeObserver || typeof MutationObserver === "undefined") return;
+    colorSchemeObserver = new MutationObserver(() => {
+      const dark = isDarkMode();
+      if (!applyingColorMode && !otherThemeActive() && !siteColorModeMatches(dark)) {
+        applySiteColorMode();
+      }
     });
-    const start = () => {
+    const observeSchemeRoot = () => {
       const root = document.head || document.documentElement;
       if (!root) return;
-      lightSchemeObserver.observe(root, {
+      colorSchemeObserver.disconnect();
+      colorSchemeObserver.observe(root, {
         childList: true,
         subtree: true,
         attributes: true,
         attributeFilter: ["media", "disabled", "class", "href"]
       });
     };
-    start();
+    observeSchemeRoot();
+    if (!document.head) document.addEventListener("DOMContentLoaded", observeSchemeRoot, { once: true });
+  }
+
+  function ensureSystemSchemeListener() {
+    if (systemSchemeMedia || typeof window.matchMedia !== "function") return;
+    systemSchemeMedia = window.matchMedia("(prefers-color-scheme: dark)");
+    const onChange = () => {
+      if (getThemeMode() === "system" && !otherThemeActive()) applySiteColorMode();
+    };
+    if (typeof systemSchemeMedia.addEventListener === "function") {
+      systemSchemeMedia.addEventListener("change", onChange);
+    } else if (typeof systemSchemeMedia.addListener === "function") {
+      systemSchemeMedia.addListener(onChange);
+    }
   }
 
   /* ============================== 最左图标 rail ============================== */
@@ -2699,6 +3375,127 @@
       moreBtn.setAttribute("aria-expanded", open ? "true" : "false");
       moreBtn.title = open ? "收起话题导航" : "展开话题导航";
     }
+  }
+
+  const THEME_MODE_LABELS = Object.freeze({
+    light: "浅色模式",
+    dark: "深色模式",
+    system: "跟随系统"
+  });
+
+  function themeModeDescription(mode) {
+    return THEME_MODE_LABELS[normalizeThemeMode(mode)];
+  }
+
+  function setThemeMenuOpen(open) {
+    const menu = document.querySelector(".wecom-theme-menu");
+    const trigger = document.querySelector(".wecom-theme-options");
+    if (!menu) return;
+    menu.hidden = !open;
+    trigger?.setAttribute("aria-expanded", open ? "true" : "false");
+  }
+
+  function syncThemeControls() {
+    const mode = getThemeMode();
+    const dark = isDarkMode();
+    const toggle = document.querySelector(".wecom-theme-toggle");
+    if (toggle) {
+      const label = toggle.querySelector(".wecom-theme-label");
+      const icon = toggle.querySelector(".wecom-theme-icon");
+      toggle.classList.toggle("is-dark", dark);
+      toggle.setAttribute("aria-pressed", dark ? "true" : "false");
+      toggle.title = dark ? "切换到浅色模式" : "切换到深色模式";
+      if (label) label.textContent = dark ? "浅色模式" : "深色模式";
+      if (icon) icon.innerHTML = dark ? ICONS.sun : ICONS.moon;
+    }
+    const menu = document.querySelector(".wecom-theme-menu");
+    if (!menu) return;
+    menu.querySelectorAll("button[data-theme-mode]").forEach((button) => {
+      const active = button.dataset.themeMode === mode;
+      button.classList.toggle("is-active", active);
+      button.setAttribute("aria-checked", active ? "true" : "false");
+    });
+    const options = document.querySelector(".wecom-theme-options");
+    if (options) options.title = `外观设置（${themeModeDescription(mode)}）`;
+  }
+
+  function bindThemeControls() {
+    if (window.__wecomThemeControlsBound) return;
+    window.__wecomThemeControlsBound = true;
+    document.addEventListener("click", (event) => {
+      if (!event.target.closest(".wecom-theme-controls, .wecom-theme-menu")) setThemeMenuOpen(false);
+    });
+    document.addEventListener("keydown", (event) => {
+      if (event.key === "Escape") setThemeMenuOpen(false);
+    });
+  }
+
+  function createThemeControls(rail) {
+    const controls = document.createElement("div");
+    controls.className = "wecom-theme-controls";
+    controls.innerHTML =
+      `<button type="button" class="wecom-rail-item wecom-theme-toggle" aria-pressed="false">` +
+      `<span class="wecom-theme-icon">${ICONS.moon}</span><span class="wecom-theme-label">深色模式</span></button>` +
+      `<button type="button" class="wecom-rail-item wecom-theme-options" aria-haspopup="menu" aria-expanded="false">` +
+      `<span class="wecom-theme-icon">${ICONS.gear}</span><span>外观设置</span></button>`;
+    const bottom = rail.querySelector(".wecom-rail-bottom");
+    if (bottom) bottom.insertBefore(controls, bottom.firstChild);
+    else rail.appendChild(controls);
+    return controls;
+  }
+
+  function createThemeMenu() {
+    const menu = document.createElement("div");
+    menu.className = "wecom-theme-menu";
+    menu.hidden = true;
+    menu.setAttribute("role", "menu");
+    menu.setAttribute("aria-label", "外观模式");
+    menu.innerHTML =
+      `<div class="wecom-theme-menu-title">外观模式</div>` +
+      `<button type="button" role="menuitemradio" data-theme-mode="light" aria-checked="false">${ICONS.sun}<span>浅色模式</span></button>` +
+      `<button type="button" role="menuitemradio" data-theme-mode="dark" aria-checked="false">${ICONS.moon}<span>深色模式</span></button>` +
+      `<button type="button" role="menuitemradio" data-theme-mode="system" aria-checked="false">${ICONS.monitorSmall}<span>跟随系统</span></button>`;
+    document.body.appendChild(menu);
+    menu.addEventListener("click", (event) => {
+      const option = event.target.closest("button[data-theme-mode]");
+      if (!option) return;
+      event.preventDefault();
+      event.stopPropagation();
+      setThemeMode(option.dataset.themeMode);
+      setThemeMenuOpen(false);
+    });
+    return menu;
+  }
+
+  function bindThemeControlButtons(controls) {
+    const toggle = controls.querySelector(".wecom-theme-toggle");
+    if (toggle && !toggle.dataset.bound) {
+      toggle.dataset.bound = "1";
+      toggle.addEventListener("click", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        setThemeMode(isDarkMode() ? "light" : "dark");
+      });
+    }
+    const options = controls.querySelector(".wecom-theme-options");
+    if (options && !options.dataset.bound) {
+      options.dataset.bound = "1";
+      options.addEventListener("click", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        const menu = document.querySelector(".wecom-theme-menu");
+        setThemeMenuOpen(!!menu?.hidden);
+      });
+    }
+  }
+
+  function ensureThemeControls(rail) {
+    if (!rail || !document.body) return;
+    const controls = rail.querySelector(".wecom-theme-controls") || createThemeControls(rail);
+    if (!document.querySelector(".wecom-theme-menu")) createThemeMenu();
+    bindThemeControlButtons(controls);
+    bindThemeControls();
+    syncThemeControls();
   }
 
   /** 企业微信工作台装饰项；仅消息和底部更多承接真实站点动作。 */
@@ -2977,6 +3774,7 @@
     }
     if (rail) {
       bindRailAvatarNotif(rail);
+      ensureThemeControls(rail);
       syncRail();
       return rail;
     }
@@ -3033,6 +3831,7 @@
     rail.appendChild(bottom);
 
     document.body.appendChild(rail);
+    ensureThemeControls(rail);
     renderOrgChip(rail);
     bindOrgChip(rail);
     bindRailAvatarNotif(rail);
@@ -4144,6 +4943,43 @@
     return "";
   }
 
+  function normalizeImageViewerScale(value) {
+    const scale = Number(value);
+    if (!Number.isFinite(scale)) return IMAGE_VIEWER_DEFAULT_SCALE;
+    return Math.min(IMAGE_VIEWER_MAX_SCALE, Math.max(IMAGE_VIEWER_MIN_SCALE, scale));
+  }
+
+  function getImageViewerScale(viewer) {
+    return normalizeImageViewerScale(viewer?.dataset.zoomScale);
+  }
+
+  function setImageViewerScale(viewer, value) {
+    const scale = normalizeImageViewerScale(value);
+    const image = viewer.querySelector(".wecom-image-viewer-image");
+    const percentage = viewer.querySelector(".wecom-image-viewer-zoom strong");
+    viewer.dataset.zoomScale = String(scale);
+    image.style.setProperty("--wecom-image-viewer-scale", String(scale));
+    if (percentage) percentage.textContent = `${Math.round(scale * IMAGE_VIEWER_PERCENT_MULTIPLIER)}%`;
+  }
+
+  function normalizedImageViewerWheelDelta(event) {
+    if (event.deltaMode === WHEEL_DELTA_LINE_MODE) {
+      return event.deltaY * IMAGE_VIEWER_LINE_HEIGHT_PX;
+    }
+    if (event.deltaMode === WHEEL_DELTA_PAGE_MODE) return event.deltaY * window.innerHeight;
+    return event.deltaY;
+  }
+
+  function handleImageViewerWheel(viewer, event) {
+    if (viewer.hidden || event.target.closest(".wecom-image-viewer-close")) return;
+    const delta = normalizedImageViewerWheelDelta(event);
+    if (!delta) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const factor = Math.exp(-delta * IMAGE_VIEWER_WHEEL_SENSITIVITY);
+    setImageViewerScale(viewer, getImageViewerScale(viewer) * factor);
+  }
+
   function ensureImageViewer() {
     let viewer = document.querySelector(".wecom-image-viewer");
     if (viewer) return viewer;
@@ -4157,6 +4993,7 @@
       <button type="button" class="wecom-image-viewer-close" aria-label="关闭图片预览">
         <b aria-hidden="true">×</b><span>关闭</span>
       </button>
+      <div class="wecom-image-viewer-zoom" aria-hidden="true"><strong>100%</strong><span>滚轮缩放</span></div>
       <div class="wecom-image-viewer-stage"><img class="wecom-image-viewer-image" alt=""></div>
       <div class="wecom-image-viewer-caption" aria-live="polite"></div>`;
     document.body.appendChild(viewer);
@@ -4169,6 +5006,7 @@
     document.addEventListener("keydown", (event) => {
       if (event.key === "Escape" && !viewer.hidden) closeImageViewer();
     });
+    viewer.addEventListener("wheel", (event) => handleImageViewerWheel(viewer, event), { passive: false });
     return viewer;
   }
 
@@ -4184,6 +5022,7 @@
     const label = sourceImage.alt?.trim() || "图片预览";
     imageViewerTrigger = sourceImage;
     image.alt = label;
+    setImageViewerScale(viewer, IMAGE_VIEWER_DEFAULT_SCALE);
     caption.textContent = "图片加载中…";
     image.onload = () => { caption.textContent = label; };
     image.onerror = () => {
@@ -4201,6 +5040,7 @@
     document.documentElement.classList.remove("wecom-image-viewer-open");
     if (!viewer) return;
     viewer.hidden = true;
+    setImageViewerScale(viewer, IMAGE_VIEWER_DEFAULT_SCALE);
     const image = viewer.querySelector(".wecom-image-viewer-image");
     image.onload = null;
     image.onerror = null;
@@ -6196,18 +7036,20 @@
     document.querySelector(".wecom-list-resizer")?.remove();
     document.querySelector(".wecom-strip")?.remove();
     document.querySelector(".wecom-titlebar")?.remove();
+    document.querySelector(".wecom-theme-menu")?.remove();
   }
 
   function applyTheme() {
     if (otherThemeActive()) {
       console.warn("[linuxdo-wecom] 检测到 IDEA / 飞书 / 钉钉主题脚本已启用，企业微信主题自动避让。请只保留其中一个。");
-      document.documentElement.classList.remove(ROOT_CLASS, LOCK_CLASS, "wecom-topic-open");
+      document.documentElement.classList.remove(ROOT_CLASS, LOCK_CLASS, "wecom-topic-open", "wecom-dark");
+      document.body?.classList.remove("wecom-dark");
       removePanels();
       return;
     }
 
-    // 只要本脚本在跑（含切回原生布局），整站写死光明模式
-    forceSiteLightMode();
+    // 只要本脚本在跑（含切回原生布局），同步当前颜色模式。
+    applySiteColorMode();
 
     if (getViewMode() === "native") {
       document.documentElement.classList.remove(ROOT_CLASS, LOCK_CLASS, "wecom-topic-open");
@@ -6287,8 +7129,8 @@
     }
     injectStyle();
     if (!otherThemeActive()) {
-      // document-start 尽早锁亮色，减少暗色闪一下
-      forceSiteLightMode();
+      // document-start 尽早应用用户选择，减少主题闪烁。
+      applySiteColorMode();
     }
     if (getViewMode() !== "native" && !otherThemeActive()) {
       document.documentElement.classList.add(ROOT_CLASS);
@@ -6306,7 +7148,7 @@
       });
     }
 
-    const WECOM_UI_SEL = ".wecom-list-panel, .wecom-chat-panel, .wecom-member-panel, .wecom-image-viewer, .wecom-rail, .wecom-strip, .wecom-titlebar, .wecom-mode-fab, #linuxdo-wecom-theme";
+    const WECOM_UI_SEL = ".wecom-list-panel, .wecom-chat-panel, .wecom-member-panel, .wecom-image-viewer, .wecom-rail, .wecom-strip, .wecom-titlebar, .wecom-mode-fab, .wecom-theme-menu, #linuxdo-wecom-theme";
     const NATIVE_BRIDGE_SEL = "#reply-control, .autocomplete, .autocomplete-container, .d-editor-popup, .emoji-picker, .tag-chooser";
     const observer = new MutationObserver((mutations) => {
       // 忽略我们自己面板内部的 DOM 变动，否则点开筛选会立刻触发 applyTheme 回写/闪断
