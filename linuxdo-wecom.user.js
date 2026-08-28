@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Linux DO · 企业微信 IM 外观
 // @namespace    https://linux.do/
-// @version      0.4.2
+// @version      0.4.4
 // @description  将 Linux DO 换成企业微信 5.x 桌面端风格；保留原站数据、路由、通知与回复交互。
 // @author       Richy
 // @match        https://linux.do/*
@@ -43,6 +43,10 @@
   const COMPOSER_STATUS_DURATION_MS = 3200;
   const POST_SYNC_RETRY_DELAYS_MS = [0, 240, 900];
   const POST_SYNC_BATCH_SIZE = 20;
+  const UPLOAD_ENDPOINTS = ["/uploads.json", "/uploads"];
+  const POST_ENDPOINTS = ["/posts.json", "/posts"];
+  const RETRYABLE_ENDPOINT_STATUS = new Set([404, 405, 415]);
+  const COMPOSER_ERROR_PREVIEW_LENGTH = 240;
   const NATIVE_COMPOSER_TEXTAREA = "#reply-control textarea.d-editor-input, #reply-control textarea";
   const NATIVE_COMPOSER_SUBMIT = [
     "#reply-control .save-or-cancel button.create",
@@ -51,9 +55,11 @@
   ].join(", ");
   const NATIVE_COMPOSER_ERROR = [
     "#reply-control .alert-error",
+    "#reply-control .alert.alert-error",
     "#reply-control .composer-error",
     "#reply-control .validation-error",
-    "#reply-control .popup-tip.bad"
+    "#reply-control .popup-tip.bad",
+    "#reply-control [role='alert']"
   ].join(", ");
 
   const AVATAR_COLORS = [
@@ -1326,6 +1332,14 @@
     .wecom-composer-tools .wecom-icon-btn { width: 28px; height: 28px; }
     .wecom-composer-tools .spacer { flex: 1; }
     .wecom-composer-tools .hint { font-size: 11px; color: var(--wc-text-4); margin-right: 8px; }
+    .wecom-image-input {
+      position: absolute !important;
+      width: 1px !important;
+      height: 1px !important;
+      opacity: 0 !important;
+      overflow: hidden !important;
+      pointer-events: none !important;
+    }
     .wecom-send-btn {
       height: 26px; padding: 0 14px; border: 0; border-radius: 5px;
       background: #C5C9D0; color: #fff; font-size: 12px; cursor: pointer;
@@ -1392,9 +1406,21 @@
       max-height: 2px !important;
       overflow: hidden !important;
       opacity: 0 !important;
+      visibility: hidden !important;
+      user-select: none !important;
       clip-path: inset(50%) !important;
       pointer-events: none !important;
       box-shadow: none !important;
+    }
+    /* 原生编辑器可能把补全菜单挂到 body；IM 输入框不应被这些浮层打断。 */
+    .${ROOT_CLASS}.${LOCK_CLASS} .autocomplete,
+    .${ROOT_CLASS}.${LOCK_CLASS} .autocomplete-container,
+    .${ROOT_CLASS}.${LOCK_CLASS} .d-editor-popup,
+    .${ROOT_CLASS}.${LOCK_CLASS} .emoji-picker,
+    .${ROOT_CLASS}.${LOCK_CLASS} .tag-chooser {
+      display: none !important;
+      visibility: hidden !important;
+      pointer-events: none !important;
     }
 
     /* ---------- native 模式悬浮恢复钮 ---------- */
@@ -3941,8 +3967,10 @@
     nativeReplyToPostNumber: null,
     replyToPostNumber: null,
     connecting: null,
+    connectingTarget: null,
     connectionSerial: 0,
     submitting: false,
+    uploading: false,
     drafts: new Map()
   };
 
@@ -4170,7 +4198,9 @@
 
   function ensureChatPanel() {
     let panel = document.querySelector(".wecom-chat-panel");
-    if (panel && (!panel.querySelector(".wecom-chat-compose") || !panel.querySelector(".wecom-pinned-banner") || !panel.querySelector(".wecom-watermark-panel"))) {
+    if (panel && (!panel.querySelector(".wecom-chat-compose") || !panel.querySelector(".wecom-pinned-banner") ||
+      !panel.querySelector(".wecom-watermark-panel") || !panel.querySelector(".wecom-image-input") ||
+      !panel.querySelector('[data-composer-action="pic"]'))) {
       panel.remove();
       panel = null;
     }
@@ -4188,13 +4218,16 @@
     panel.className = "wecom-chat-panel";
     panel.dataset.empty = "1";
     panel.dataset.composeBound = "1";
-    const toolKeys = ["emoji", "cut", "folder", "pic", "plus"];
-    const toolsHtml = toolKeys.map((k) => {
-      const inner = k === "aa"
-        ? '<span style="font-size:13px;font-weight:600;line-height:1">Aa</span><span class="dot"></span>'
-        : ICONS[k];
-      return `<button type="button" class="wecom-icon-btn" tabindex="-1" aria-hidden="true">${inner}</button>`;
-    }).join("");
+    const toolKeys = [
+      ["emoji", "表情"],
+      ["cut", "截图"],
+      ["folder", "附件"],
+      ["pic", "发送图片"],
+      ["plus", "更多"]
+    ];
+    const toolsHtml = toolKeys.map(([key, label]) =>
+      `<button type="button" class="wecom-icon-btn" data-composer-action="${key}" title="${label}" aria-label="${label}">${ICONS[key]}</button>`
+    ).join("");
     const headTools = ["cam", "phone", "users", "dots"].map((k) => {
       const dot = k === "users" ? '<span class="dot"></span>' : "";
       return `<button type="button" class="wecom-icon-btn" title="${k}" tabindex="-1">${dot}${ICONS[k]}</button>`;
@@ -4250,7 +4283,7 @@
       <div class="wecom-chat-body"></div>
       <div class="wecom-composer">
         <div class="wecom-composer-card">
-          <div class="wecom-composer-tools">${toolsHtml}<span class="wecom-compose-status" aria-live="polite"></span><div class="spacer"></div><button type="button" class="wecom-send-btn" disabled>发送</button></div>
+          <div class="wecom-composer-tools">${toolsHtml}<input class="wecom-image-input" type="file" accept="image/*" multiple aria-label="选择图片"><span class="wecom-compose-status" aria-live="polite"></span><div class="spacer"></div><button type="button" class="wecom-send-btn" disabled>发送</button></div>
           <div class="wecom-reply-target" hidden><span></span><button type="button" class="wecom-reply-cancel" aria-label="取消指定回复">×</button></div>
           <textarea class="wecom-chat-compose" data-wecom-compose="1" rows="3" aria-label="消息" placeholder="发送消息"></textarea>
         </div>
@@ -4340,13 +4373,34 @@
     const input = panel.querySelector(".wecom-chat-compose");
     if (!input || input.dataset.wired === "1") return;
     input.dataset.wired = "1";
-    input.addEventListener("focus", connectComposerFromUi);
-    input.addEventListener("input", () => handleComposerInput(input));
+    input.addEventListener("focus", (event) => {
+      event.stopPropagation();
+    });
+    input.addEventListener("input", (event) => {
+      event.stopPropagation();
+      handleComposerInput(input);
+    });
+    ["beforeinput", "keypress", "keyup", "compositionstart", "compositionupdate", "compositionend"].forEach((type) => {
+      input.addEventListener(type, (event) => event.stopPropagation());
+    });
     input.addEventListener("keydown", handleComposerKeydown);
-    panel.querySelector(".wecom-send-btn")?.addEventListener("click", submitComposerFromUi);
+    input.addEventListener("paste", handleComposerPaste);
+    input.addEventListener("drop", handleComposerDrop);
+    input.addEventListener("dragover", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+    });
+    panel.querySelector(".wecom-image-input")?.addEventListener("change", handleComposerFileChange);
+    panel.querySelector(".wecom-send-btn")?.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      submitComposerFromUi(event);
+    });
     panel.querySelector(".wecom-reply-cancel")?.addEventListener("click", cancelTargetedReply);
     panel.querySelectorAll(".wecom-composer-tools .wecom-icon-btn").forEach((button) => {
-      button.addEventListener("click", () => input.focus());
+      button.addEventListener("pointerdown", stopComposerPointer, true);
+      button.addEventListener("mousedown", stopComposerPointer, true);
+      button.addEventListener("click", handleComposerToolClick);
     });
     updateComposeSendState();
   }
@@ -4487,7 +4541,253 @@
 
   function csrfToken() {
     const meta = document.querySelector("meta[name='csrf-token']");
-    return meta ? meta.content : "";
+    if (meta?.content) return meta.content;
+    const session = safeLookup(getEmberOwner(), "service:session");
+    return session?.csrfToken || session?.get?.("csrfToken") || "";
+  }
+
+  function bridgeHeaders(contentType) {
+    const headers = { Accept: "application/json", "X-Requested-With": "XMLHttpRequest" };
+    const token = csrfToken();
+    if (token) headers["X-CSRF-Token"] = token;
+    if (contentType) headers["Content-Type"] = contentType;
+    return headers;
+  }
+
+  async function responsePayload(response) {
+    if (typeof response?.text !== "function") {
+      return typeof response?.json === "function" ? response.json() : null;
+    }
+    const text = await response.text();
+    if (!text) return null;
+    try { return JSON.parse(text); } catch { return { raw: text }; }
+  }
+
+  function payloadError(payload, fallback) {
+    const errors = payload?.errors || payload?.error;
+    if (Array.isArray(errors) && errors.length) return errors.join("；");
+    if (typeof errors === "string" && errors.trim()) return errors.trim();
+    if (typeof payload?.message === "string" && payload.message.trim()) return payload.message.trim();
+    if (typeof payload?.raw === "string" && payload.raw.trim()) {
+      return payload.raw.replace(/\s+/g, " ").trim().slice(0, COMPOSER_ERROR_PREVIEW_LENGTH);
+    }
+    return fallback;
+  }
+
+  function responseStatus(error) {
+    return Number(error?.status) || 0;
+  }
+
+  function markResponseError(error, status) {
+    error.status = Number(status) || 0;
+    return error;
+  }
+
+  function retryableEndpointError(error) {
+    return error instanceof TypeError || Boolean(error?.retryable) ||
+      RETRYABLE_ENDPOINT_STATUS.has(responseStatus(error));
+  }
+
+  function submittedPostFromPayload(payload) {
+    const post = payload?.post || payload?.created_post || payload;
+    if (!post || typeof post !== "object") return null;
+    const id = Number(post.id || post.post_id);
+    const number = Number(post.post_number || post.postNumber);
+    return id > 0 || number > 0 ? post : null;
+  }
+
+  async function submitReplyViaApi(raw, replyToPostNumber) {
+    const body = { raw, topic_id: Number(chatState.topicId) };
+    if (replyToPostNumber) body.reply_to_post_number = Number(replyToPostNumber);
+    let lastError = null;
+    for (const endpoint of POST_ENDPOINTS) {
+      try {
+        const response = await fetch(endpoint, {
+          method: "POST",
+          credentials: "same-origin",
+          headers: bridgeHeaders("application/json; charset=UTF-8"),
+          body: JSON.stringify(body)
+        });
+        const payload = await responsePayload(response);
+        if (!response.ok) {
+          lastError = markResponseError(new Error(payloadError(payload, `HTTP ${response.status}`)), response.status);
+          if (RETRYABLE_ENDPOINT_STATUS.has(response.status)) continue;
+          throw lastError;
+        }
+        const post = submittedPostFromPayload(payload);
+        if (post) return post;
+        lastError = new Error(payloadError(payload, "站点未确认回复"));
+        lastError.retryable = true;
+      } catch (error) {
+        lastError = error instanceof Error ? error : new Error(String(error));
+        if (!retryableEndpointError(error)) throw lastError;
+      }
+    }
+    throw lastError || new Error("回复接口不可用");
+  }
+
+  function imageFile(file) {
+    if (!file) return false;
+    if (String(file.type || "").toLowerCase().startsWith("image/")) return true;
+    return /\.(?:avif|bmp|gif|jpe?g|png|svg|webp)$/i.test(String(file.name || ""));
+  }
+
+  function uploadPayload(payload) {
+    const first = Array.isArray(payload?.uploads) ? payload.uploads[0] : null;
+    return payload?.upload || first || payload;
+  }
+
+  function uploadedImageUrl(payload) {
+    const upload = uploadPayload(payload);
+    const value = upload?.short_url || upload?.url || upload?.thumbnail_url;
+    if (/^upload:\/\//i.test(String(value || ""))) return String(value);
+    return normalizePreviewImageUrl(value);
+  }
+
+  function markdownImageUrl(url) {
+    return String(url || "").replace(/[\\()]/g, (char) => `\\${char}`);
+  }
+
+  function uploadedImageMarkdown(payload, file) {
+    const upload = uploadPayload(payload);
+    const url = uploadedImageUrl(upload);
+    if (!url) throw new Error("站点未返回图片地址");
+    const rawLabel = String(upload?.original_filename || file?.name || "图片");
+    const label = rawLabel.replace(/\.[^.]+$/, "").replace(/[\[\]\\|]/g, "_");
+    const width = Number(upload?.thumbnail_width || upload?.width) || 0;
+    const height = Number(upload?.thumbnail_height || upload?.height) || 0;
+    const dimensions = width > 0 && height > 0 ? `|${width}x${height}` : "";
+    return `![${label}${dimensions}](${markdownImageUrl(url)})`;
+  }
+
+  async function uploadImageFile(file) {
+    let lastError = null;
+    for (const endpoint of UPLOAD_ENDPOINTS) {
+      const form = new FormData();
+      form.append("file", file, file.name || "image");
+      // 原生 composer 使用 composer 类型；type 仅供旧版 Discourse 兼容读取。
+      form.append("upload_type", "composer");
+      form.append("type", "composer");
+      form.append("synchronous", "true");
+      try {
+        const response = await fetch(endpoint, {
+          method: "POST",
+          credentials: "same-origin",
+          headers: bridgeHeaders(),
+          body: form
+        });
+        const payload = await responsePayload(response);
+        if (!response.ok) {
+          lastError = markResponseError(new Error(payloadError(payload, `HTTP ${response.status}`)), response.status);
+          if (RETRYABLE_ENDPOINT_STATUS.has(response.status)) continue;
+          throw lastError;
+        }
+        if (uploadedImageUrl(payload)) return payload;
+        lastError = new Error("站点未返回图片地址");
+        lastError.retryable = true;
+      } catch (error) {
+        lastError = error instanceof Error ? error : new Error(String(error));
+        if (!retryableEndpointError(error)) throw lastError;
+      }
+    }
+    throw lastError || new Error("图片上传接口不可用");
+  }
+
+  function insertComposerText(text) {
+    const input = composeUi().input;
+    if (!input || !text) return;
+    const start = Number.isInteger(input.selectionStart) ? input.selectionStart : input.value.length;
+    const end = Number.isInteger(input.selectionEnd) ? input.selectionEnd : start;
+    const before = input.value.slice(0, start);
+    const after = input.value.slice(end);
+    const prefix = before && !/[\n ]$/.test(before) ? "\n" : "";
+    const suffix = after && !/^[\n ]/.test(after) ? "\n" : "";
+    input.value = `${before}${prefix}${text}${suffix}${after}`;
+    const caret = (before + prefix + text + suffix).length;
+    input.setSelectionRange(caret, caret);
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    input.focus({ preventScroll: true });
+  }
+
+  async function uploadComposerFiles(files) {
+    const selected = [...(files || [])];
+    const images = selected.filter(imageFile);
+    if (!selected.length) return;
+    if (composerBridgeState.uploading) {
+      setComposeStatus("已有图片正在上传，请等待完成后重试", "error", false);
+      return;
+    }
+    if (!images.length) {
+      setComposeStatus("请选择图片文件", "error", false);
+      return;
+    }
+    composerBridgeState.uploading = true;
+    updateComposeSendState();
+    try {
+      const markdown = [];
+      for (const file of images) {
+        setComposeStatus(`正在上传 ${file.name || "图片"}…`, "busy", true);
+        const payload = await uploadImageFile(file);
+        markdown.push(uploadedImageMarkdown(payload, file));
+      }
+      insertComposerText(markdown.join("\n"));
+      setComposeStatus(`已添加 ${markdown.length} 张图片`, "success", false);
+    } catch (error) {
+      reportComposerError(error, "上传");
+    } finally {
+      composerBridgeState.uploading = false;
+      updateComposeSendState();
+    }
+  }
+
+  function handleComposerFileChange(event) {
+    event.preventDefault();
+    event.stopPropagation();
+    uploadComposerFiles(event.target.files);
+    event.target.value = "";
+  }
+
+  function transferImages(event) {
+    const transfer = event.clipboardData || event.dataTransfer;
+    const files = [...(transfer?.files || [])];
+    // Chromium 会同时在 files 和 items 中暴露同一张剪贴板图片，且两者不是同一个 File 实例。
+    if (files.length) return files.filter(imageFile);
+    const itemFiles = [...(event.clipboardData?.items || [])]
+      .filter((item) => item.kind === "file")
+      .map((item) => item.getAsFile?.())
+      .filter(Boolean);
+    return itemFiles.filter(imageFile);
+  }
+
+  function handleComposerPaste(event) {
+    const files = transferImages(event);
+    if (!files.length) return;
+    event.preventDefault();
+    event.stopPropagation();
+    uploadComposerFiles(files);
+  }
+
+  function handleComposerDrop(event) {
+    const files = transferImages(event);
+    if (!files.length) return;
+    event.preventDefault();
+    event.stopPropagation();
+    uploadComposerFiles(files);
+  }
+
+  function stopComposerPointer(event) {
+    event.stopPropagation();
+  }
+
+  function handleComposerToolClick(event) {
+    event.preventDefault();
+    event.stopPropagation();
+    const button = event.currentTarget;
+    const action = button?.dataset.composerAction;
+    const panel = button?.closest(".wecom-chat-panel");
+    const input = panel?.querySelector(".wecom-chat-compose");
+    if (action === "pic" || action === "folder") panel?.querySelector(".wecom-image-input")?.click();
+    else if (input) input.focus({ preventScroll: true });
   }
 
   async function toggleLike(postId, btn) {
@@ -4644,7 +4944,7 @@
   function updateComposeSendState() {
     const { input, send } = composeUi();
     if (!input || !send) return;
-    send.disabled = composerBridgeState.submitting || !input.value.trim();
+    send.disabled = composerBridgeState.submitting || composerBridgeState.uploading || !input.value.trim();
   }
 
   function setComposeStatus(message, kind, persistent) {
@@ -4664,10 +4964,10 @@
     setComposeStatus(message, kind, false);
   }
 
-  function reportComposerError(error) {
+  function reportComposerError(error, action = "回复") {
     const message = error instanceof Error ? error.message : String(error || "未知错误");
     console.error("[linuxdo-wecom] composer bridge failed", error);
-    setComposeStatus(`回复失败：${message}`, "error", true);
+    setComposeStatus(`${action}失败：${message}`, "error", true);
   }
 
   function delay(ms) {
@@ -4682,8 +4982,10 @@
   function nativeComposerMatchesTopic(topicId) {
     const model = getOpenComposerModel();
     if (!model) return true;
-    const modelTopicId = model.get?.("topic.id") ?? model.topic?.id;
-    return !modelTopicId || Number(modelTopicId) === Number(topicId);
+    const modelTopicId = model.get?.("topic.id") ?? model.get?.("topic_id") ??
+      model.topic?.id ?? model.topic_id;
+    const normalized = Number(modelTopicId?.id ?? modelTopicId);
+    return !Number.isFinite(normalized) || normalized === Number(topicId);
   }
 
   function waitForNativeComposer(topicId) {
@@ -4708,16 +5010,21 @@
     });
   }
 
-  function setNativeComposerValue(value) {
+  function setNativeComposerValue(value, options = {}) {
     const textarea = nativeComposerTextarea();
-    if (!textarea || textarea.value === value) return;
+    if (!textarea) return false;
+    const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set;
+    if (!setter) throw new Error("无法连接原生回复输入框");
+    const changed = textarea.value !== value;
+    if (changed) setter.call(textarea, value);
+    if (options.notify !== true) return changed;
     const model = getOpenComposerModel();
     if (typeof model?.set === "function") model.set("reply", value);
     else if (model && "reply" in model) model.reply = value;
-    const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set;
-    if (!setter) throw new Error("无法连接原生回复输入框");
-    setter.call(textarea, value);
-    textarea.dispatchEvent(new Event("input", { bubbles: true }));
+    if (options.emitInput !== false) {
+      textarea.dispatchEvent(new Event("input", { bubbles: true }));
+    }
+    return changed;
   }
 
   function storeComposerDraft(value) {
@@ -4750,11 +5057,26 @@
     });
   }
 
+  function clearNativeComposerDraft() {
+    if (!nativeComposerTextarea()) return;
+    setNativeComposerValue("", { notify: true, emitInput: false });
+  }
+
   function connectNativeComposer(postNumber) {
-    if (composerBridgeState.connecting) return composerBridgeState.connecting;
     const requestedPost = Number(postNumber) || null;
+    const ready = nativeComposerTextarea();
+    if (ready && composerBridgeState.nativeTopicId === chatState.topicId &&
+      composerBridgeState.nativeReplyToPostNumber === requestedPost) {
+      return Promise.resolve(ready);
+    }
+    if (composerBridgeState.connecting) {
+      if (composerBridgeState.connectingTarget === requestedPost) return composerBridgeState.connecting;
+      return composerBridgeState.connecting.catch(() => null).then(() => connectNativeComposer(postNumber));
+    }
     const wrongTopic = composerBridgeState.nativeTopicId !== chatState.topicId;
     const wrongReplyTarget = requestedPost !== composerBridgeState.nativeReplyToPostNumber;
+    const composeInput = composeUi().input;
+    const restoreFocus = composeInput && document.activeElement === composeInput;
     if (!isComposerOpen() || wrongTopic || wrongReplyTarget) {
       if (!openNativeComposer(requestedPost)) {
         return Promise.reject(new Error("无法启动原生回复引擎"));
@@ -4762,24 +5084,26 @@
     }
     const topicId = chatState.topicId;
     const connectionSerial = ++composerBridgeState.connectionSerial;
+    composerBridgeState.connectingTarget = requestedPost;
     const connection = waitForNativeComposer(topicId).then((textarea) => {
       if (chatState.topicId !== topicId) throw new Error("回复目标已切换，请重新输入");
       composerBridgeState.nativeTopicId = topicId;
       composerBridgeState.nativeReplyToPostNumber = requestedPost;
       bindNativeComposerInput(textarea);
       syncFromNativeComposer(textarea);
+      if (restoreFocus && composeInput?.isConnected) {
+        textarea.blur();
+        composeInput.focus({ preventScroll: true });
+      }
       return textarea;
     });
     composerBridgeState.connecting = connection.finally(() => {
       if (composerBridgeState.connectionSerial === connectionSerial) {
         composerBridgeState.connecting = null;
+        composerBridgeState.connectingTarget = null;
       }
     });
     return composerBridgeState.connecting;
-  }
-
-  function connectComposerFromUi() {
-    connectNativeComposer(composerBridgeState.replyToPostNumber).catch(reportComposerError);
   }
 
   function handleComposerInput(input) {
@@ -4789,16 +5113,29 @@
     const correctTopic = nativeComposerMatchesTopic(chatState.topicId);
     const correctTarget = composerBridgeState.nativeReplyToPostNumber === composerBridgeState.replyToPostNumber;
     if (nativeComposerTextarea() && correctTopic && correctTarget) {
+      // 只写入 DOM，不派发原生 input 事件；否则 Discourse 会在输入 #/@ 时弹出补全层。
       setNativeComposerValue(input.value);
-      return;
     }
-    connectComposerFromUi();
   }
 
   function handleComposerKeydown(event) {
+    if (event.__wecomComposerGuarded) return;
+    event.stopPropagation();
     if (event.key !== "Enter" || event.shiftKey || event.isComposing || event.keyCode === 229) return;
     event.preventDefault();
     submitComposerFromUi(event);
+  }
+
+  function guardComposerShortcut(event) {
+    const target = event.target;
+    if (!(target instanceof Element) || !target.closest("textarea.wecom-chat-compose")) return;
+    event.__wecomComposerGuarded = true;
+    if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "k") event.preventDefault();
+    if (event.key === "Enter" && !event.shiftKey && !event.isComposing && event.keyCode !== 229) {
+      event.preventDefault();
+      submitComposerFromUi(event);
+    }
+    event.stopImmediatePropagation();
   }
 
   function submitComposerFromUi(event) {
@@ -4826,20 +5163,10 @@
     if (target) target.hidden = true;
   }
 
-  async function retargetComposerToTopic() {
-    if (!isComposerOpen()) return;
-    if (!retargetOpenNativeComposer(null)) throw new Error("无法取消指定回复目标");
-    composerBridgeState.nativeReplyToPostNumber = null;
-    await delay(COMPOSER_INPUT_SETTLE_MS);
-    const textarea = await waitForNativeComposer(chatState.topicId);
-    syncFromNativeComposer(textarea);
-  }
-
   function cancelTargetedReply(event) {
     event?.preventDefault?.();
     event?.stopPropagation?.();
     hideTargetedReply();
-    retargetComposerToTopic().catch(reportComposerError);
     composeUi().input?.focus();
   }
 
@@ -4852,6 +5179,11 @@
     composerBridgeState.topicId = topicId || null;
     composerBridgeState.connectionSerial += 1;
     composerBridgeState.connecting = null;
+    composerBridgeState.connectingTarget = null;
+    if (previousTopicId !== composerBridgeState.topicId) {
+      composerBridgeState.nativeTopicId = null;
+      composerBridgeState.nativeReplyToPostNumber = null;
+    }
     hideTargetedReply();
     if (input) input.value = composerBridgeState.drafts.get(topicId) || "";
     setComposeStatus("", "", false);
@@ -4963,16 +5295,6 @@
     return false;
   }
 
-  function reportComposerOpenFailure(postNumber) {
-    flashComposeHint("打开失败：请点右上角「原生视图」回复", "error");
-    console.error("[linuxdo-wecom] openNativeComposer failed", {
-      topicId: chatState.topicId,
-      postNumber,
-      hasOwner: !!getEmberOwner(),
-      hasComposer: !!getComposerService(getEmberOwner())
-    });
-  }
-
   function closeNativeComposerForTopicSwitch() {
     const owner = getEmberOwner();
     const composer = owner ? getComposerService(owner) : null;
@@ -5012,25 +5334,38 @@
       }
       const opened = tryComposerStrategies(postNumber);
       if (opened) return true;
-      reportComposerOpenFailure(postNumber);
+      console.warn("[linuxdo-wecom] openNativeComposer failed", { topicId: chatState.topicId, postNumber });
       return false;
     } catch (err) {
       console.error("[linuxdo-wecom] openNativeComposer crashed", err);
-      flashComposeHint(`打开失败：${err && err.message ? err.message : "未知错误"}`, "error");
       return false;
     }
   }
 
   function nativeComposerErrorText() {
-    const error = document.querySelector(NATIVE_COMPOSER_ERROR);
+    const root = document.querySelector("#reply-control.open, #reply-control.fullscreen, #reply-control.edit-title");
+    const error = root?.querySelector(NATIVE_COMPOSER_ERROR);
     return error?.textContent?.replace(/\s+/g, " ").trim() || "";
   }
 
   function nativeSubmitButton() {
-    return document.querySelector(NATIVE_COMPOSER_SUBMIT);
+    const root = document.querySelector("#reply-control.open, #reply-control.fullscreen, #reply-control.edit-title");
+    if (!root) return null;
+    const buttons = [...root.querySelectorAll(`${NATIVE_COMPOSER_SUBMIT}, button[type='submit']`)];
+    return buttons.find((button) => !button.hidden && button.getAttribute("aria-hidden") !== "true") || buttons[0] || null;
   }
 
-  function waitForComposerSubmitOutcome() {
+  function dismissNativeComposerPopups() {
+    const selectors = [
+      ".autocomplete", ".autocomplete-container", ".d-editor-popup", ".emoji-picker", ".tag-chooser"
+    ];
+    document.querySelectorAll(selectors.join(", ")).forEach((node) => {
+      node.hidden = true;
+      node.setAttribute("aria-hidden", "true");
+    });
+  }
+
+  function waitForComposerSubmitOutcome(initialValue) {
     if (!isComposerOpen()) return Promise.resolve();
     return new Promise((resolve, reject) => {
       const finish = (error) => {
@@ -5044,7 +5379,12 @@
           return;
         }
         const errorText = nativeComposerErrorText();
-        if (errorText) finish(new Error(errorText));
+        if (errorText) {
+          finish(new Error(errorText));
+          return;
+        }
+        const textarea = nativeComposerTextarea();
+        if (initialValue && textarea && !textarea.value.trim()) finish();
       };
       const observer = new MutationObserver(inspect);
       const timer = setTimeout(() => {
@@ -5055,15 +5395,20 @@
     });
   }
 
-  function completeComposerSubmission(input) {
+  function completeComposerSubmission(input, submittedPost) {
     const topicId = chatState.topicId;
     input.value = "";
     storeComposerDraft("");
     hideTargetedReply();
+    clearNativeComposerDraft();
     composerBridgeState.nativeTopicId = null;
     composerBridgeState.nativeReplyToPostNumber = null;
     setComposeStatus("已发送", "success", false);
     if (topicId) {
+      const post = submittedPost?.post || submittedPost;
+      if (post && (post.id || post.post_number)) {
+        appendFreshPosts([post], document.querySelector(".wecom-chat-body"));
+      }
       syncNewPostsFromDom();
       scheduleSubmittedPostSync(topicId);
       refreshTopicAfterSubmission(topicId).catch((error) => {
@@ -5073,24 +5418,88 @@
     }
   }
 
+  async function submitNativeReply(raw) {
+    const requestedPost = composerBridgeState.replyToPostNumber;
+    let clicked = false;
+    try {
+      await connectNativeComposer(requestedPost);
+      setNativeComposerValue(raw, { notify: true, emitInput: false });
+      await delay(COMPOSER_INPUT_SETTLE_MS);
+      let button = nativeSubmitButton();
+      if (!button) throw new Error("找不到原生发送按钮");
+      if (button.disabled || button.getAttribute("aria-disabled") === "true") {
+        setNativeComposerValue(raw, { notify: true, emitInput: true });
+        dismissNativeComposerPopups();
+        await delay(COMPOSER_INPUT_SETTLE_MS);
+        button = nativeSubmitButton();
+      }
+      if (!button || button.disabled || button.getAttribute("aria-disabled") === "true") {
+        throw new Error(nativeComposerErrorText() || "内容未达到站点发送要求");
+      }
+      dismissNativeComposerPopups();
+      clicked = true;
+      button.click();
+      await waitForComposerSubmitOutcome(raw);
+    } catch (error) {
+      if (error && typeof error === "object") error.submissionStarted = clicked;
+      throw error;
+    }
+  }
+
+  function isSubmissionTimeout(error) {
+    return /发送状态未确认|未在规定时间内就绪/.test(String(error?.message || error || ""));
+  }
+
+  async function recoverTimedOutSubmission(raw, replyTo) {
+    const beforeStreamLength = chatState.stream.length;
+    const refreshed = await refreshTopicOnce(chatState.topicId).catch(() => 0);
+    if (refreshed > 0 || chatState.stream.length > beforeStreamLength) return null;
+    return submitReplyViaApi(raw, replyTo);
+  }
+
   async function submitComposer() {
     const { input } = composeUi();
-    if (!input || !input.value.trim() || composerBridgeState.submitting) return;
+    if (!input || !input.value.trim() || composerBridgeState.submitting || composerBridgeState.uploading) return;
+    if (!chatState.topicId) throw new Error("请先打开一个话题");
     composerBridgeState.submitting = true;
     updateComposeSendState();
     setComposeStatus("正在发送…", "busy", true);
+    const raw = input.value;
+    const replyTo = composerBridgeState.replyToPostNumber;
     try {
-      await connectNativeComposer(composerBridgeState.replyToPostNumber);
-      setNativeComposerValue(input.value);
-      await delay(COMPOSER_INPUT_SETTLE_MS);
-      const button = nativeSubmitButton();
-      if (!button) throw new Error("找不到原生发送按钮");
-      if (button.disabled || button.getAttribute("aria-disabled") === "true") {
-        throw new Error(nativeComposerErrorText() || "内容未达到站点发送要求");
+      let apiError = null;
+      try {
+        const post = await submitReplyViaApi(raw, replyTo);
+        completeComposerSubmission(input, post);
+        return;
+      } catch (error) {
+        apiError = error;
       }
-      button.click();
-      await waitForComposerSubmitOutcome();
-      completeComposerSubmission(input);
+      try {
+        await submitNativeReply(raw);
+        completeComposerSubmission(input);
+      } catch (error) {
+        if (error?.submissionStarted && isSubmissionTimeout(error)) {
+          try {
+            const post = await recoverTimedOutSubmission(raw, replyTo);
+            completeComposerSubmission(input, post);
+            return;
+          } catch (fallbackError) {
+            throw new Error(`${error.message || "原生回复失败"}；备用路径：${fallbackError.message}`);
+          }
+        }
+        if (error?.submissionStarted) throw error;
+        try {
+          const post = await submitReplyViaApi(raw, replyTo);
+          completeComposerSubmission(input, post);
+        } catch (fallbackError) {
+          const details = [apiError, fallbackError]
+            .filter(Boolean)
+            .map((item) => item.message)
+            .join("；");
+          throw new Error(`${error.message || "原生回复失败"}${details ? `；备用路径：${details}` : ""}`);
+        }
+      }
     } finally {
       composerBridgeState.submitting = false;
       updateComposeSendState();
@@ -5099,9 +5508,7 @@
 
   function replyToPost(postNumber) {
     showTargetedReply(postNumber);
-    const pending = connectNativeComposer(postNumber);
     composeUi().input?.focus();
-    pending.catch(reportComposerError);
   }
 
   const TIME_SEP_GAP = 10 * 60 * 1000;
@@ -5878,6 +6285,7 @@
     }
 
     const WECOM_UI_SEL = ".wecom-list-panel, .wecom-chat-panel, .wecom-member-panel, .wecom-image-viewer, .wecom-rail, .wecom-strip, .wecom-titlebar, .wecom-mode-fab, #linuxdo-wecom-theme";
+    const NATIVE_BRIDGE_SEL = "#reply-control, .autocomplete, .autocomplete-container, .d-editor-popup, .emoji-picker, .tag-chooser";
     const observer = new MutationObserver((mutations) => {
       // 忽略我们自己面板内部的 DOM 变动，否则点开筛选会立刻触发 applyTheme 回写/闪断
       const external = mutations.some((m) => {
@@ -5885,7 +6293,7 @@
         if (!(t instanceof Element) && !(t instanceof CharacterData)) return true;
         const el = t instanceof Element ? t : t.parentElement;
         if (!el) return true;
-        if (el.closest(WECOM_UI_SEL)) return false;
+        if (el.closest(WECOM_UI_SEL) || el.closest(NATIVE_BRIDGE_SEL)) return false;
         if (el.id === "linuxdo-wecom-theme") return false;
         return true;
       });
@@ -5907,6 +6315,12 @@
     document.addEventListener("DOMContentLoaded", scheduleApply, { once: true });
     document.addEventListener("turbo:load", scheduleApply);
     document.addEventListener("page:changed", scheduleApply);
+
+    // 在 window 捕获阶段截断站点快捷键，避免 #/@/Ctrl+K 等按键打开原生弹窗。
+    if (!window.__wecomComposerShortcutGuardBound) {
+      window.__wecomComposerShortcutGuardBound = true;
+      window.addEventListener("keydown", guardComposerShortcut, true);
+    }
 
     // 定时同步头像通知角标（currentUser 未读数会变）
     if (!window.__wecomNotifBadgeTimer) {
