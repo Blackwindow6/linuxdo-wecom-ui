@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Linux DO · 企业微信 IM 外观
 // @namespace    https://linux.do/
-// @version      0.5.7
+// @version      0.5.8
 // @description  将 Linux DO 换成企业微信 5.x 桌面端风格；支持浅色/深色/跟随系统，并保留原站交互。
 // @author       Richy
 // @match        https://linux.do/*
@@ -54,6 +54,8 @@
   const COMPOSER_STATUS_DURATION_MS = 3200;
   const POST_SYNC_RETRY_DELAYS_MS = [0, 240, 900];
   const POST_SYNC_BATCH_SIZE = 20;
+  const REPLY_PREVIEW_LENGTH = 72;
+  const REPLY_HIGHLIGHT_DURATION_MS = 1800;
   const UPLOAD_ENDPOINTS = ["/uploads.json", "/uploads"];
   const POST_ENDPOINTS = ["/posts.json", "/posts"];
   const RETRYABLE_ENDPOINT_STATUS = new Set([404, 405, 415]);
@@ -1330,6 +1332,29 @@
     .wecom-msg-me .wecom-msg-content { align-items: flex-end; }
     .wecom-msg-name { font-size: 12px; color: var(--wc-text-3); margin-bottom: 4px; }
     .wecom-msg-me .wecom-msg-name { display: none; }
+    .wecom-reply-reference {
+      display: grid; grid-template-columns: 16px minmax(0, 1fr); column-gap: 6px;
+      max-width: 420px; margin: 0 0 5px; padding: 5px 8px;
+      color: var(--wc-text-2) !important; background: rgba(67, 137, 245, .09);
+      border-left: 2px solid var(--wc-accent); border-radius: 3px;
+      text-align: left; text-decoration: none !important; cursor: pointer;
+    }
+    .wecom-reply-reference:hover { background: rgba(67, 137, 245, .15); }
+    .wecom-reply-reference:focus-visible { outline: 2px solid var(--wc-accent); outline-offset: 2px; }
+    .wecom-reply-reference svg {
+      grid-row: 1 / span 2; width: 15px; height: 15px; margin-top: 1px; color: var(--wc-accent);
+    }
+    .wecom-reply-reference-label {
+      min-width: 0; overflow: hidden; color: var(--wc-accent);
+      font-size: 11px; font-weight: 600; line-height: 16px; text-overflow: ellipsis; white-space: nowrap;
+    }
+    .wecom-reply-reference-preview {
+      min-width: 0; overflow: hidden; color: var(--wc-text-3);
+      font-size: 11px; line-height: 16px; text-overflow: ellipsis; white-space: nowrap;
+    }
+    .wecom-msg.is-reply-target .wecom-msg-bubble {
+      outline: 2px solid var(--wc-accent); outline-offset: 3px;
+    }
     .wecom-msg-bubble {
       padding: 10px 14px;
       font-size: 14px; line-height: 1.6;
@@ -3111,6 +3136,16 @@
     html.${ROOT_CLASS}.wecom-dark .wecom-msg-time-sep {
       color: var(--wc-text-3) !important;
     }
+    html.${ROOT_CLASS}.wecom-dark .wecom-reply-reference {
+      color: var(--wc-text-2) !important;
+      background: rgba(51, 140, 255, .14) !important;
+      border-left-color: #338CFF !important;
+    }
+    html.${ROOT_CLASS}.wecom-dark .wecom-reply-reference:hover {
+      background: rgba(51, 140, 255, .22) !important;
+    }
+    html.${ROOT_CLASS}.wecom-dark .wecom-reply-reference-label { color: #80B7FF !important; }
+    html.${ROOT_CLASS}.wecom-dark .wecom-reply-reference-preview { color: var(--wc-text-3) !important; }
     html.${ROOT_CLASS}.wecom-dark .wecom-msg-bubble {
       color: var(--wc-text) !important;
     }
@@ -4980,6 +5015,7 @@
     slug: "",
     loading: false,
     stream: [],        // 全部 post id 顺序
+    postsByNumber: new Map(), // 已加载楼层，供回复关系与摘要解析
     renderedFirstIdx: 0, // stream 中已渲染的起始下标
     renderedLastIdx: -1, // stream 中已渲染的结束下标
     renderedLastNumber: 0, // 已渲染的最大 post_number
@@ -5641,73 +5677,90 @@
     });
   }
 
+  function isPlainClick(event) {
+    return !event.metaKey && !event.ctrlKey && !event.shiftKey && !event.altKey && event.button === 0;
+  }
+
+  function consumeClick(event) {
+    event.preventDefault();
+    event.stopPropagation();
+  }
+
+  function handleReplyReferenceClick(event, panel) {
+    const reference = event.target.closest("a.wecom-reply-reference");
+    if (!reference || !panel.contains(reference) || !isPlainClick(event)) return false;
+    if (!focusRenderedReply(reference)) return false;
+    consumeClick(event);
+    return true;
+  }
+
+  function handleChatHeaderClick(event, panel) {
+    if (event.target.closest(".wecom-topic-bookmark")) {
+      consumeClick(event);
+      openOriginalTopicBookmark();
+      return true;
+    }
+    if (event.target.closest(".wecom-chat-refresh")) {
+      if (chatState.topicId) loadTopic(chatState.topicId, true);
+      return true;
+    }
+    if (event.target.closest(".wecom-chat-native")) {
+      setViewMode("native");
+      location.reload();
+      return true;
+    }
+    const chip = event.target.closest("a.wecom-chat-chip");
+    if (!chip || !panel.contains(chip) || !isPlainClick(event)) return false;
+    consumeClick(event);
+    navigateInApp(chip.getAttribute("href"));
+    return true;
+  }
+
+  function handleMessageToolClick(event, panel) {
+    const button = event.target.closest(".wecom-msg-tool");
+    if (!button || !panel.contains(button)) return;
+    const message = button.closest(".wecom-msg");
+    if (!message) return;
+    const action = button.dataset.action;
+    if (action === "like") return toggleLike(Number(message.dataset.postId), button);
+    consumeClick(event);
+    if (action === "reply") return replyToPost(Number(message.dataset.postNumber));
+    if (action === "bookmark") return openOriginalPostBookmark(message).catch(reportPostBookmarkError);
+    if (action === "edit") return openEditPost(message, button);
+  }
+
+  function handleChatPanelClick(event, panel) {
+    if (handleReplyReferenceClick(event, panel)) return;
+    const previewImage = event.target.closest(".wecom-msg-bubble img");
+    if (isPreviewableChatImage(previewImage)) {
+      consumeClick(event);
+      openImageViewer(previewImage);
+      return;
+    }
+    if (handleChatHeaderClick(event, panel)) return;
+    handleMessageToolClick(event, panel);
+  }
+
+  function handleChatImageKeydown(event) {
+    if (event.key !== "Enter" && event.key !== " ") return;
+    if (!isPreviewableChatImage(event.target)) return;
+    event.preventDefault();
+    openImageViewer(event.target);
+  }
+
+  function handleChatBodyScroll(panel) {
+    if (chatState.pinningScroll) return;
+    chatState.pinnedPost = 0;
+    const body = panel.querySelector(".wecom-chat-body");
+    if (body.scrollTop < 80) loadOlderPosts();
+    if (body.scrollTop + body.clientHeight >= body.scrollHeight - 120) loadNewerPosts();
+    trackVisibleTopicPost();
+  }
+
   function bindChatPanelEvents(panel) {
-    panel.addEventListener("click", (e) => {
-      const previewImage = e.target.closest(".wecom-msg-bubble img");
-      if (isPreviewableChatImage(previewImage)) {
-        e.preventDefault();
-        e.stopPropagation();
-        openImageViewer(previewImage);
-        return;
-      }
-      if (e.target.closest(".wecom-topic-bookmark")) {
-        e.preventDefault();
-        e.stopPropagation();
-        openOriginalTopicBookmark();
-        return;
-      }
-      if (e.target.closest(".wecom-chat-refresh")) {
-        if (chatState.topicId) loadTopic(chatState.topicId, true);
-        return;
-      }
-      if (e.target.closest(".wecom-chat-native")) {
-        setViewMode("native");
-        location.reload();
-        return;
-      }
-      // 聊天头分类 chip：站内软跳转
-      const chipLink = e.target.closest("a.wecom-chat-chip");
-      if (chipLink && panel.contains(chipLink)) {
-        if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0) return;
-        e.preventDefault();
-        e.stopPropagation();
-        navigateInApp(chipLink.getAttribute("href"));
-        return;
-      }
-      const toolBtn = e.target.closest(".wecom-msg-tool");
-      if (!toolBtn || !panel.contains(toolBtn)) return;
-      const msg = toolBtn.closest(".wecom-msg");
-      if (!msg) return;
-      if (toolBtn.dataset.action === "like") {
-        toggleLike(Number(msg.dataset.postId), toolBtn);
-      } else if (toolBtn.dataset.action === "reply") {
-        e.preventDefault();
-        e.stopPropagation();
-        replyToPost(Number(msg.dataset.postNumber));
-      } else if (toolBtn.dataset.action === "bookmark") {
-        e.preventDefault();
-        e.stopPropagation();
-        openOriginalPostBookmark(msg).catch(reportPostBookmarkError);
-      } else if (toolBtn.dataset.action === "edit") {
-        e.preventDefault();
-        e.stopPropagation();
-        openEditPost(msg, toolBtn);
-      }
-    });
-    panel.addEventListener("keydown", (event) => {
-      if (event.key !== "Enter" && event.key !== " ") return;
-      if (!isPreviewableChatImage(event.target)) return;
-      event.preventDefault();
-      openImageViewer(event.target);
-    });
-    panel.querySelector(".wecom-chat-body").addEventListener("scroll", () => {
-      if (chatState.pinningScroll) return;
-      chatState.pinnedPost = 0;
-      const body = panel.querySelector(".wecom-chat-body");
-      if (body.scrollTop < 80) loadOlderPosts();
-      if (body.scrollTop + body.clientHeight >= body.scrollHeight - 120) loadNewerPosts();
-      trackVisibleTopicPost();
-    });
+    panel.addEventListener("click", (event) => handleChatPanelClick(event, panel));
+    panel.addEventListener("keydown", handleChatImageKeydown);
+    panel.querySelector(".wecom-chat-body").addEventListener("scroll", () => handleChatBodyScroll(panel));
   }
 
   function renderChatEmpty() {
@@ -5715,6 +5768,7 @@
     ensureChatPanel();
     chatState.topicId = null;
     chatState.slug = "";
+    chatState.postsByNumber = new Map();
     chatState.replyTotal = 0;
     setTopicBookmarkState(false);
     chatState.pinnedPost = 0;
@@ -5759,6 +5813,102 @@
 
   const likedPosts = new Set();
 
+  let highlightedReplyMessage = null;
+  let replyHighlightTimer = null;
+
+  function rememberChatPosts(posts) {
+    if (!Array.isArray(posts) || !posts.length) return;
+    const next = new Map(chatState.postsByNumber);
+    for (const post of posts) {
+      const number = postNumberOf(post);
+      if (number) next.set(number, post);
+    }
+    chatState.postsByNumber = next;
+  }
+
+  function replyPreviewText(post) {
+    if (!post) return "点击查看原消息";
+    const container = document.createElement("div");
+    container.innerHTML = String(post.cooked || "");
+    const text = String(container.textContent || "").replace(/\s+/g, " ").trim();
+    if (text) {
+      const characters = [...text];
+      return characters.length > REPLY_PREVIEW_LENGTH
+        ? `${characters.slice(0, REPLY_PREVIEW_LENGTH).join("")}…`
+        : text;
+    }
+    if (container.querySelector("img")) return "[图片]";
+    if (container.querySelector(".attachment, a[href]")) return "[附件或链接]";
+    return "查看原消息";
+  }
+
+  function replyPostHref(postNumber) {
+    const topicId = Number(chatState.topicId) || 0;
+    const slug = chatState.slug || topicRouteFromPath(location.pathname).slug;
+    if (!topicId) return `#post_${Number(postNumber)}`;
+    return slug
+      ? `/t/${encodeURIComponent(slug)}/${topicId}/${Number(postNumber)}`
+      : `/t/${topicId}/${Number(postNumber)}`;
+  }
+
+  function replyReferenceInfo(post) {
+    const number = Number(post?.reply_to_post_number) || 0;
+    if (!number || number === postNumberOf(post)) return null;
+    const target = chatState.postsByNumber.get(number) || null;
+    const user = { ...(target || {}), ...(post.reply_to_user || {}) };
+    return Object.freeze({
+      number,
+      name: userDisplayName(user, `消息 #${number}`),
+      preview: replyPreviewText(target),
+      href: replyPostHref(number)
+    });
+  }
+
+  function replyReferenceHtml(post) {
+    const info = replyReferenceInfo(post);
+    if (!info) return "";
+    const label = `回复 ${info.name} · #${info.number}`;
+    const title = `${label}：${info.preview}`;
+    return `<a class="wecom-reply-reference" href="${escapeHtml(info.href)}"` +
+      ` data-reply-post-number="${info.number}" title="${escapeHtml(title)}"` +
+      ` aria-label="${escapeHtml(title)}">${ICONS.reply}` +
+      `<span class="wecom-reply-reference-label">${escapeHtml(label)}</span>` +
+      `<span class="wecom-reply-reference-preview">${escapeHtml(info.preview)}</span></a>`;
+  }
+
+  function syncRenderedReplyReferences(posts, body) {
+    for (const post of posts) {
+      const number = postNumberOf(post);
+      const message = body.querySelector(`.wecom-msg[data-post-number="${number}"]`);
+      if (!message) continue;
+      const current = message.querySelector(".wecom-reply-reference");
+      const html = replyReferenceHtml(post);
+      if (!html) {
+        current?.remove();
+      } else if (current) {
+        current.outerHTML = html;
+      } else {
+        message.querySelector(".wecom-msg-bubble")?.insertAdjacentHTML("beforebegin", html);
+      }
+    }
+  }
+
+  function focusRenderedReply(reference) {
+    const number = Number(reference?.dataset.replyPostNumber) || 0;
+    const message = document.querySelector(`.wecom-msg[data-post-number="${number}"]`);
+    if (!message) return false;
+    clearTimeout(replyHighlightTimer);
+    highlightedReplyMessage?.classList.remove("is-reply-target");
+    highlightedReplyMessage = message;
+    message.classList.add("is-reply-target");
+    message.scrollIntoView({ behavior: "smooth", block: "center", inline: "nearest" });
+    replyHighlightTimer = setTimeout(() => {
+      message.classList.remove("is-reply-target");
+      if (highlightedReplyMessage === message) highlightedReplyMessage = null;
+    }, REPLY_HIGHLIGHT_DURATION_MS);
+    return true;
+  }
+
   function bubbleHtml(post, myName) {
     const me = isMyPost(post, myName);
     const side = me ? "me" : "other";
@@ -5788,6 +5938,7 @@
         <span class="wecom-msg-avatar" style="background:${avatarBg}"${userCardAttributes(post)}>${avatar}</span>
         <div class="wecom-msg-content">
           <span class="wecom-msg-name">${escapeHtml(displayName)}</span>
+          ${replyReferenceHtml(post)}
           <div class="wecom-msg-bubble">${post.cooked || ""}</div>
           <span class="wecom-msg-meta">
             <span>#${post.post_number}</span>
@@ -7053,8 +7204,27 @@
     });
   }
 
+  function withSubmittedReplyMetadata(post, requestedPostNumber) {
+    if (!post || typeof post !== "object") return post;
+    const replyNumber = Number(post.reply_to_post_number || requestedPostNumber) || 0;
+    if (!replyNumber) return post;
+    const target = chatState.postsByNumber.get(replyNumber);
+    const replyUser = post.reply_to_user || (target ? {
+      id: postUserId(target),
+      username: postUsername(target),
+      name: target.name,
+      avatar_template: target.avatar_template
+    } : null);
+    return {
+      ...post,
+      reply_to_post_number: replyNumber,
+      ...(replyUser ? { reply_to_user: replyUser } : {})
+    };
+  }
+
   function completeComposerSubmission(input, submittedPost) {
     const topicId = chatState.topicId;
+    const requestedReply = composerBridgeState.replyToPostNumber;
     input.value = "";
     storeComposerDraft("");
     hideTargetedReply();
@@ -7063,7 +7233,8 @@
     composerBridgeState.nativeReplyToPostNumber = null;
     setComposeStatus("已发送", "success", false);
     if (topicId) {
-      const post = submittedPost?.post || submittedPost;
+      const rawPost = submittedPost?.post || submittedPost;
+      const post = withSubmittedReplyMetadata(rawPost, requestedReply);
       if (post && (post.id || post.post_number)) {
         appendFreshPosts([post], document.querySelector(".wecom-chat-body"));
       }
@@ -7172,6 +7343,7 @@
   const TIME_SEP_GAP = 10 * 60 * 1000;
 
   function renderBubbles(posts, myName) {
+    rememberChatPosts(posts);
     const frag = [];
     let lastTime = 0;
     for (const post of posts) {
@@ -7379,6 +7551,7 @@
       return;
     }
     const sameTopic = chatState.topicId === topicId;
+    if (!sameTopic) chatState.postsByNumber = new Map();
     if (!sameTopic) closeEditDialog(true);
     const requestedPost = openingPostNumber(topicId, null);
     chatState.loading = true;
@@ -7609,6 +7782,8 @@
 
   function appendFreshPosts(posts, body, options = {}) {
     if (!body || !Array.isArray(posts) || !posts.length) return 0;
+    rememberChatPosts(posts);
+    syncRenderedReplyReferences(posts, body);
     const renderedNumbers = new Set(
       [...body.querySelectorAll(".wecom-msg[data-post-number]")]
         .map((node) => Number(node.dataset.postNumber))
