@@ -48,6 +48,14 @@
 ### 深浅色模式切换
 <img width="1859" height="927" alt="深色浅色样式切换" src="https://github.com/user-attachments/assets/fab5c50e-eda9-43fc-8132-9bfead18f270" />
 
+### 原站表情
+<img width="1596" height="771" alt="image" src="https://github.com/user-attachments/assets/5302d039-923e-42bd-8519-d782b0b61dc3" />
+
+### 编辑修改已发送帖子
+<img width="998" height="765" alt="image" src="https://github.com/user-attachments/assets/d7747160-d31a-4177-a64a-e6db685c1580" />
+
+
+
 > 以上截图由本地测试数据或公开话题页面生成，不包含私聊内容。
 
 ## 主要特性
