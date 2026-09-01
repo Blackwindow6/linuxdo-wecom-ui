@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Linux DO · 企业微信 IM 外观
 // @namespace    https://linux.do/
-// @version      0.5.1
+// @version      0.5.4
 // @description  将 Linux DO 换成企业微信 5.x 桌面端风格；支持浅色/深色/跟随系统，并保留原站交互。
 // @author       Richy
 // @match        https://linux.do/*
@@ -121,6 +121,7 @@
     refresh: `<svg width="18" height="18" viewBox="0 0 24 24" fill="none"><path d="M20 12a8 8 0 1 1-2.3-5.6" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/><path d="M20 4v5h-5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>`,
     external: `<svg width="18" height="18" viewBox="0 0 24 24" fill="none"><path d="M14 5h5v5M19 5l-8 8" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/><path d="M11 7H7a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2v-4" stroke="currentColor" stroke-width="1.6"/></svg>`,
     reply: `<svg width="18" height="18" viewBox="0 0 24 24" fill="none"><path d="M9 14L4 9l5-5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/><path d="M4 9h10a6 6 0 0 1 0 12h-3" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>`,
+    edit: `<svg width="18" height="18" viewBox="0 0 24 24" fill="none"><path d="M5 16.8V19h2.2L18.4 7.8l-2.2-2.2L5 16.8Z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="m14.8 7 2.2 2.2" stroke="currentColor" stroke-width="1.6"/><path d="M12.5 19H19" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>`,
     menu: `<svg width="18" height="18" viewBox="0 0 24 24" fill="none"><path d="M4 7h16M7 12h10M10 17h4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>`,
     chevronDown: `<svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M6 9l6 6 6-6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>`,
     chevronUp: `<svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M6 15l6-6 6 6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>`,
@@ -1468,7 +1469,6 @@
     .${ROOT_CLASS}.${LOCK_CLASS} .autocomplete,
     .${ROOT_CLASS}.${LOCK_CLASS} .autocomplete-container,
     .${ROOT_CLASS}.${LOCK_CLASS} .d-editor-popup,
-    .${ROOT_CLASS}.${LOCK_CLASS} .emoji-picker,
     .${ROOT_CLASS}.${LOCK_CLASS} .tag-chooser {
       display: none !important;
       visibility: hidden !important;
@@ -2143,6 +2143,38 @@
     }
     .wecom-rail-resizer:hover,
     .wecom-rail-resizer.dragging { background: rgba(67, 137, 245, .24); }
+    /* 原生“更多”菜单以内联浮层挂在侧栏中，必须覆盖侧栏的透明背景重置。 */
+    html.${ROOT_CLASS} body .sidebar-wrapper .sidebar-more-section-content {
+      z-index: 1200 !important;
+      isolation: isolate;
+    }
+    html.${ROOT_CLASS} body .sidebar-wrapper .sidebar-more-section-content .fk-d-menu__inner-content,
+    html.${ROOT_CLASS} body .sidebar-wrapper .sidebar-more-section-content > .dropdown-menu {
+      min-width: 210px;
+      overflow: hidden;
+      background-color: #FFFFFF !important;
+      border-color: #D6DEE8 !important;
+      box-shadow: 0 8px 24px rgba(44, 71, 105, .18) !important;
+    }
+    html.${ROOT_CLASS} body .sidebar-wrapper .sidebar-more-section-content .dropdown-menu {
+      display: flex !important;
+      flex-direction: column !important;
+      width: 100%;
+      margin: 0 !important;
+      background-color: #FFFFFF !important;
+    }
+    html.${ROOT_CLASS} body .sidebar-wrapper .sidebar-more-section-content .dropdown-menu__item {
+      position: relative !important;
+      display: flex !important;
+      min-height: 32px !important;
+      flex: 0 0 auto !important;
+    }
+    html.${ROOT_CLASS} body .sidebar-wrapper .sidebar-more-section-content .sidebar-section-link {
+      position: relative !important;
+      display: flex !important;
+      min-height: 32px !important;
+      align-items: center !important;
+    }
     .${ROOT_CLASS}.wecom-notif-open .user-menu.wecom-user-menu-float,
     .${ROOT_CLASS}.wecom-notif-open .user-menu.revamped.menu-panel.wecom-user-menu-float,
     .${ROOT_CLASS}.wecom-notif-open .user-menu.menu-panel.wecom-user-menu-float {
@@ -2513,6 +2545,89 @@
     .wecom-send-btn:not(:disabled) { color: #4389F5; cursor: pointer; }
     .wecom-send-btn:not(:disabled):hover { background: #EEF5FF; }
 
+    /* 本人消息编辑弹窗。 */
+    .wecom-edit-dialog,
+    .wecom-edit-dialog * { box-sizing: border-box; }
+    .wecom-edit-dialog[hidden] { display: none !important; }
+    .wecom-edit-dialog {
+      position: fixed;
+      inset: 0;
+      z-index: 12000;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 20px;
+      background: rgba(24, 35, 49, .42);
+      font-family: var(--wc-font);
+    }
+    .wecom-edit-dialog-card {
+      width: min(560px, calc(100vw - 32px));
+      max-height: calc(100vh - 40px);
+      display: flex;
+      flex-direction: column;
+      padding: 18px;
+      border: 1px solid #D6DEE8;
+      border-radius: 10px;
+      background: #FFFFFF;
+      box-shadow: 0 18px 50px rgba(30, 48, 71, .24);
+      color: #172033;
+    }
+    .wecom-edit-dialog-head,
+    .wecom-edit-dialog-actions {
+      display: flex;
+      align-items: center;
+    }
+    .wecom-edit-dialog-head { justify-content: space-between; margin-bottom: 12px; }
+    .wecom-edit-dialog-title { font-size: 16px; font-weight: 600; }
+    .wecom-edit-dialog-close {
+      width: 28px;
+      height: 28px;
+      padding: 0;
+      border: 0;
+      border-radius: 5px;
+      background: transparent;
+      color: #7D8B9D;
+      font-size: 21px;
+      line-height: 26px;
+      cursor: pointer;
+    }
+    .wecom-edit-dialog-close:hover { background: #EEF3F8; }
+    .wecom-edit-input {
+      width: 100%;
+      min-height: 180px;
+      max-height: 55vh;
+      padding: 11px 12px;
+      resize: vertical;
+      border: 1px solid #C9D3DF;
+      border-radius: 7px;
+      outline: 0;
+      background: #FFFFFF;
+      color: #172033;
+      font: 14px/1.6 var(--wc-font);
+    }
+    .wecom-edit-input:focus { border-color: #4389F5; box-shadow: 0 0 0 2px rgba(67,137,245,.13); }
+    .wecom-edit-status { min-height: 20px; padding-top: 6px; color: #8795A8; font-size: 12px; }
+    .wecom-edit-status.error { color: #D84C4C; }
+    .wecom-edit-status.busy { color: #4389F5; }
+    .wecom-edit-status.success { color: #07A35A; }
+    .wecom-edit-dialog-actions { justify-content: flex-end; gap: 8px; }
+    .wecom-edit-dialog-actions button {
+      min-width: 68px;
+      height: 32px;
+      border: 1px solid #CCD6E2;
+      border-radius: 6px;
+      background: #FFFFFF;
+      color: #526175;
+      font: 13px var(--wc-font);
+      cursor: pointer;
+    }
+    .wecom-edit-dialog-actions .wecom-edit-save {
+      border-color: #4389F5;
+      background: #4389F5;
+      color: #FFFFFF;
+    }
+    .wecom-edit-dialog-actions .wecom-edit-save:disabled { opacity: .5; cursor: default; }
+
     /* 最终兜底：后续响应式规则也不能把后台原生编辑器带回屏幕。 */
     .${ROOT_CLASS}.${LOCK_CLASS} #reply-control.open,
     .${ROOT_CLASS}.${LOCK_CLASS} #reply-control.edit-title,
@@ -2680,6 +2795,13 @@
     html.${ROOT_CLASS}.wecom-dark body .sidebar-wrapper .sidebar-section-link.active {
       background-color: rgba(51, 140, 255, .2) !important;
       color: #338CFF !important;
+    }
+    html.${ROOT_CLASS}.wecom-dark body .sidebar-wrapper .sidebar-more-section-content .fk-d-menu__inner-content,
+    html.${ROOT_CLASS}.wecom-dark body .sidebar-wrapper .sidebar-more-section-content > .dropdown-menu,
+    html.${ROOT_CLASS}.wecom-dark body .sidebar-wrapper .sidebar-more-section-content .dropdown-menu {
+      background-color: var(--wc-surface-3) !important;
+      border-color: var(--wc-divider) !important;
+      box-shadow: 0 10px 28px rgba(0, 0, 0, .45) !important;
     }
     html.${ROOT_CLASS}.wecom-dark .user-menu.wecom-user-menu-float,
     html.${ROOT_CLASS}.wecom-dark .user-menu.revamped.menu-panel.wecom-user-menu-float,
@@ -3053,6 +3175,34 @@
     }
     html.${ROOT_CLASS}.wecom-dark .wecom-composer-tools .hint {
       color: var(--wc-text-3) !important;
+    }
+    html.${ROOT_CLASS}.wecom-dark .wecom-edit-dialog-card {
+      background: var(--wc-surface-3) !important;
+      border-color: var(--wc-divider) !important;
+      color: var(--wc-text) !important;
+      box-shadow: 0 14px 36px rgba(0, 0, 0, .5) !important;
+    }
+    html.${ROOT_CLASS}.wecom-dark .wecom-edit-dialog-close:hover {
+      background: rgba(255, 255, 255, .08) !important;
+    }
+    html.${ROOT_CLASS}.wecom-dark .wecom-edit-dialog-close,
+    html.${ROOT_CLASS}.wecom-dark .wecom-edit-status,
+    html.${ROOT_CLASS}.wecom-dark .wecom-edit-dialog-actions button {
+      color: var(--wc-text-3) !important;
+    }
+    html.${ROOT_CLASS}.wecom-dark .wecom-edit-status.error { color: #FF6B73 !important; }
+    html.${ROOT_CLASS}.wecom-dark .wecom-edit-status.busy { color: #338CFF !important; }
+    html.${ROOT_CLASS}.wecom-dark .wecom-edit-status.success { color: #21C978 !important; }
+    html.${ROOT_CLASS}.wecom-dark .wecom-edit-input,
+    html.${ROOT_CLASS}.wecom-dark .wecom-edit-dialog-actions button {
+      background: var(--wc-surface-4) !important;
+      border-color: var(--wc-divider) !important;
+      color: var(--wc-text) !important;
+    }
+    html.${ROOT_CLASS}.wecom-dark .wecom-edit-dialog-actions .wecom-edit-save {
+      background: #338CFF !important;
+      border-color: #338CFF !important;
+      color: #FFFFFF !important;
     }
     html.${ROOT_CLASS}.wecom-dark .wecom-mode-fab {
       background: #338CFF !important;
@@ -4795,6 +4945,16 @@
     drafts: new Map()
   };
 
+  const editState = {
+    postId: null,
+    postNumber: null,
+    requestSerial: 0,
+    loading: false,
+    saving: false,
+    uploading: false,
+    trigger: null
+  };
+
   function normalizeWatermarkText(value) {
     return String(value ?? "").trim().replace(/\s+/g, " ");
   }
@@ -5058,11 +5218,107 @@
     });
   }
 
+  function editUi() {
+    const dialog = document.querySelector(".wecom-edit-dialog");
+    return {
+      dialog,
+      input: dialog?.querySelector(".wecom-edit-input"),
+      save: dialog?.querySelector(".wecom-edit-save"),
+      status: dialog?.querySelector(".wecom-edit-status"),
+      title: dialog?.querySelector(".wecom-edit-dialog-title")
+    };
+  }
+
+  function setEditStatus(message, kind = "") {
+    const { status } = editUi();
+    if (!status) return;
+    status.textContent = message || "";
+    status.className = `wecom-edit-status${kind ? ` ${kind}` : ""}`;
+  }
+
+  function updateEditSaveState() {
+    const { input, save } = editUi();
+    if (!input || !save) return;
+    save.disabled = editState.loading || editState.saving || editState.uploading || !input.value.trim();
+  }
+
+  function closeEditDialog(force = false) {
+    if ((editState.saving || editState.uploading) && !force) return;
+    const { dialog, input } = editUi();
+    const trigger = editState.trigger;
+    editState.requestSerial += 1;
+    editState.postId = null;
+    editState.postNumber = null;
+    editState.loading = false;
+    editState.saving = false;
+    editState.uploading = false;
+    editState.trigger = null;
+    if (dialog) dialog.hidden = true;
+    if (input) {
+      input.disabled = false;
+      input.value = "";
+    }
+    setEditStatus("");
+    if (trigger?.isConnected) trigger.focus({ preventScroll: true });
+  }
+
+  function handleEditDialogClick(event) {
+    const { dialog } = editUi();
+    const action = event.target.closest("[data-edit-action]")?.dataset.editAction;
+    if (event.target === dialog || action === "close" || action === "cancel") {
+      closeEditDialog();
+      return;
+    }
+    if (action === "save") submitEditedPost();
+  }
+
+  function handleEditDialogKeydown(event) {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      closeEditDialog();
+      return;
+    }
+    if (event.key !== "Enter" || !(event.ctrlKey || event.metaKey)) return;
+    event.preventDefault();
+    submitEditedPost();
+  }
+
+  function ensureEditDialog() {
+    let dialog = document.querySelector(".wecom-edit-dialog");
+    if (dialog) return dialog;
+    dialog = document.createElement("div");
+    dialog.className = "wecom-edit-dialog";
+    dialog.hidden = true;
+    dialog.setAttribute("role", "dialog");
+    dialog.setAttribute("aria-modal", "true");
+    dialog.setAttribute("aria-labelledby", "wecom-edit-dialog-title");
+    dialog.innerHTML = `
+      <div class="wecom-edit-dialog-card">
+        <div class="wecom-edit-dialog-head">
+          <strong id="wecom-edit-dialog-title" class="wecom-edit-dialog-title">编辑消息</strong>
+          <button type="button" class="wecom-edit-dialog-close" data-edit-action="close" aria-label="关闭">×</button>
+        </div>
+        <textarea class="wecom-edit-input" aria-label="消息原文" placeholder="正在读取消息原文…"></textarea>
+        <div class="wecom-edit-status" role="alert" aria-live="polite"></div>
+        <div class="wecom-edit-dialog-actions">
+          <button type="button" data-edit-action="cancel">取消</button>
+          <button type="button" class="wecom-edit-save" data-edit-action="save" disabled>保存</button>
+        </div>
+      </div>`;
+    document.body.appendChild(dialog);
+    dialog.addEventListener("click", handleEditDialogClick);
+    dialog.addEventListener("keydown", handleEditDialogKeydown);
+    const input = dialog.querySelector(".wecom-edit-input");
+    input.addEventListener("input", updateEditSaveState);
+    input.addEventListener("paste", handleEditPaste);
+    return dialog;
+  }
+
   function ensureChatPanel() {
     let panel = document.querySelector(".wecom-chat-panel");
     if (panel && (!panel.querySelector(".wecom-chat-compose") || !panel.querySelector(".wecom-pinned-banner") ||
       !panel.querySelector(".wecom-watermark-panel") || !panel.querySelector(".wecom-image-input") ||
-      !panel.querySelector('[data-composer-action="pic"]'))) {
+      !panel.querySelector('[data-composer-action="emoji"]') || !panel.querySelector('[data-composer-action="pic"]'))) {
       panel.remove();
       panel = null;
     }
@@ -5074,6 +5330,7 @@
       bindWatermarkSettings(panel);
       renderWatermark(getWatermarkSettings());
       wireComposeButton(panel);
+      ensureEditDialog();
       return panel;
     }
     panel = document.createElement("div");
@@ -5087,9 +5344,10 @@
       ["pic", "发送图片"],
       ["plus", "更多"]
     ];
-    const toolsHtml = toolKeys.map(([key, label]) =>
-      `<button type="button" class="wecom-icon-btn" data-composer-action="${key}" title="${label}" aria-label="${label}">${ICONS[key]}</button>`
-    ).join("");
+    const toolsHtml = toolKeys.map(([key, label]) => {
+      const popup = key === "emoji" ? ' aria-haspopup="dialog" aria-expanded="false"' : "";
+      return `<button type="button" class="wecom-icon-btn" data-composer-action="${key}" title="${label}" aria-label="${label}"${popup}>${ICONS[key]}</button>`;
+    }).join("");
     const headTools = ["cam", "phone", "users", "dots"].map((k) => {
       const dot = k === "users" ? '<span class="dot"></span>' : "";
       return `<button type="button" class="wecom-icon-btn" title="${k}" tabindex="-1">${dot}${ICONS[k]}</button>`;
@@ -5155,6 +5413,7 @@
     bindChatPanelEvents(panel);
     bindWatermarkSettings(panel);
     renderWatermark(getWatermarkSettings());
+    ensureEditDialog();
     panel.querySelector(".wecom-pinned-close")?.addEventListener("click", () => {
       const banner = panel.querySelector(".wecom-pinned-banner");
       if (banner) banner.style.display = "none";
@@ -5267,6 +5526,48 @@
     updateComposeSendState();
   }
 
+  function officialEmojiPickerDependencies() {
+    const owner = getEmberOwner();
+    const menu = safeLookup(owner, "service:menu");
+    const module = discourseRequire("discourse/components/emoji-picker/detached");
+    const component = module?.default || module;
+    if (!owner) throw new Error("无法连接 Discourse 应用容器");
+    if (!menu || typeof menu.show !== "function") throw new Error("站点未提供官方表情菜单服务");
+    if (!component) throw new Error("站点未加载官方表情组件");
+    return { menu, component };
+  }
+
+  function officialEmojiMarkdown(emoji) {
+    const code = String(emoji || "").trim().replace(/^:+|:+$/g, "");
+    if (!/^[^\s:]+(?::t[1-6])?$/.test(code)) throw new Error("官方表情组件返回了无效表情代码");
+    return `:${code}:`;
+  }
+
+  function closeOfficialEmojiPicker() {
+    const menu = safeLookup(getEmberOwner(), "service:menu");
+    if (typeof menu?.close !== "function") return;
+    Promise.resolve(menu.close("emoji-picker")).catch((error) => {
+      console.error("[linuxdo-wecom] failed to close official emoji picker", error);
+    });
+  }
+
+  async function showOfficialEmojiPicker(trigger) {
+    if (!(trigger instanceof Element)) throw new Error("找不到表情按钮");
+    const { menu, component } = officialEmojiPickerDependencies();
+    await menu.show(trigger, {
+      identifier: "emoji-picker",
+      groupIdentifier: "emoji-picker",
+      component,
+      modalForMobile: true,
+      onShow: () => trigger.setAttribute("aria-expanded", "true"),
+      onClose: () => trigger.setAttribute("aria-expanded", "false"),
+      data: {
+        context: "topic",
+        didSelectEmoji: (emoji) => insertComposerInlineText(officialEmojiMarkdown(emoji))
+      }
+    });
+  }
+
   function bindChatPanelEvents(panel) {
     panel.addEventListener("click", (e) => {
       const previewImage = e.target.closest(".wecom-msg-bubble img");
@@ -5304,6 +5605,10 @@
         e.preventDefault();
         e.stopPropagation();
         replyToPost(Number(msg.dataset.postNumber));
+      } else if (toolBtn.dataset.action === "edit") {
+        e.preventDefault();
+        e.stopPropagation();
+        openEditPost(msg, toolBtn);
       }
     });
     panel.addEventListener("keydown", (event) => {
@@ -5323,6 +5628,7 @@
   }
 
   function renderChatEmpty() {
+    closeEditDialog(true);
     ensureChatPanel();
     chatState.topicId = null;
     chatState.slug = "";
@@ -5383,6 +5689,9 @@
       avatar = escapeHtml(avatarLetter(displayName));
     }
     const liked = post.id && likedPosts.has(post.id) ? " liked" : "";
+    const editButton = me && (post.id || post.post_number)
+      ? `<button type="button" class="wecom-msg-tool" data-action="edit" title="编辑">${ICONS.edit}</button>`
+      : "";
     return `
       <div class="wecom-msg wecom-msg-${side}" data-post-number="${post.post_number}"${post.id ? ` data-post-id="${post.id}"` : ""}${me ? ' data-mine="1"' : ""}>
         <span class="wecom-msg-avatar" style="background:${avatarBg}">${avatar}</span>
@@ -5394,8 +5703,9 @@
             <span>${escapeHtml(formatTime(post.created_at))}</span>
           </span>
           <div class="wecom-msg-tools">
-            <button class="wecom-msg-tool${liked}" data-action="like" title="点赞">${ICONS.like}</button>
-            <button class="wecom-msg-tool" data-action="reply" title="回复">${ICONS.reply}</button>
+            <button type="button" class="wecom-msg-tool${liked}" data-action="like" title="点赞">${ICONS.like}</button>
+            <button type="button" class="wecom-msg-tool" data-action="reply" title="回复">${ICONS.reply}</button>
+            ${editButton}
           </div>
         </div>
       </div>`;
@@ -5450,12 +5760,154 @@
       RETRYABLE_ENDPOINT_STATUS.has(responseStatus(error));
   }
 
-  function submittedPostFromPayload(payload) {
+  function postFromPayload(payload) {
     const post = payload?.post || payload?.created_post || payload;
-    if (!post || typeof post !== "object") return null;
+    return post && typeof post === "object" ? post : null;
+  }
+
+  function submittedPostFromPayload(payload) {
+    const post = postFromPayload(payload);
+    if (!post) return null;
     const id = Number(post.id || post.post_id);
     const number = Number(post.post_number || post.postNumber);
     return id > 0 || number > 0 ? post : null;
+  }
+
+  async function fetchEditablePost(postId) {
+    const response = await fetch(`/posts/${encodeURIComponent(postId)}.json`, {
+      credentials: "same-origin",
+      headers: bridgeHeaders()
+    });
+    const payload = await responsePayload(response);
+    if (!response.ok) {
+      throw new Error(payloadError(payload, `读取原文失败（HTTP ${response.status}）`));
+    }
+    const post = postFromPayload(payload);
+    if (!post || typeof post.raw !== "string") throw new Error("站点未返回可编辑原文");
+    return post;
+  }
+
+  async function resolveEditablePost(postId, postNumber) {
+    let resolvedId = Number(postId) || 0;
+    if (!resolvedId) {
+      const topicId = Number(chatState.topicId);
+      if (!topicId || !postNumber) throw new Error("无法确定待编辑消息");
+      const payload = await api(`/t/${encodeURIComponent(topicId)}/${encodeURIComponent(postNumber)}.json`, {
+        cache: "no-store"
+      });
+      const posts = payload?.post_stream?.posts || payload?.posts || [];
+      const target = posts.find((post) => Number(post?.post_number) === Number(postNumber));
+      resolvedId = Number(target?.id) || 0;
+    }
+    if (!resolvedId) throw new Error(`无法解析消息 #${postNumber} 的帖子 ID`);
+    return { postId: resolvedId, post: await fetchEditablePost(resolvedId) };
+  }
+
+  async function updateEditablePost(postId, raw) {
+    const response = await fetch(`/posts/${encodeURIComponent(postId)}`, {
+      method: "PUT",
+      credentials: "same-origin",
+      headers: bridgeHeaders("application/json; charset=UTF-8"),
+      body: JSON.stringify({ post: { raw } })
+    });
+    const payload = await responsePayload(response);
+    if (!response.ok) {
+      throw new Error(payloadError(payload, `保存编辑失败（HTTP ${response.status}）`));
+    }
+    const post = postFromPayload(payload);
+    if (!post) throw new Error("站点未返回编辑结果");
+    return post;
+  }
+
+  function applyEditedPost(postId, post) {
+    if (typeof post?.cooked !== "string") return false;
+    const message = document.querySelector(`.wecom-msg[data-post-id="${Number(postId)}"]`);
+    const bubble = message?.querySelector(".wecom-msg-bubble");
+    if (!message || !bubble) return false;
+    bubble.innerHTML = post.cooked;
+    hydrateChatImages(message);
+    return true;
+  }
+
+  async function openEditPost(message, trigger) {
+    const postId = Number(message?.dataset.postId) || 0;
+    const postNumber = Number(message?.dataset.postNumber);
+    if (!postNumber || message?.dataset.mine !== "1") {
+      setComposeStatus("当前消息不可编辑", "error", false);
+      return;
+    }
+    const dialog = ensureEditDialog();
+    const { input, title } = editUi();
+    const requestSerial = ++editState.requestSerial;
+    Object.assign(editState, {
+      postId: postId || null,
+      postNumber,
+      loading: true,
+      saving: false,
+      uploading: false,
+      trigger
+    });
+    dialog.hidden = false;
+    title.textContent = `编辑消息 #${postNumber}`;
+    input.value = "";
+    input.disabled = true;
+    setEditStatus("正在读取消息原文…", "busy");
+    updateEditSaveState();
+    try {
+      const resolved = await resolveEditablePost(postId, postNumber);
+      if (requestSerial !== editState.requestSerial) return;
+      editState.postId = resolved.postId;
+      message.dataset.postId = String(resolved.postId);
+      input.value = resolved.post.raw;
+      input.disabled = false;
+      editState.loading = false;
+      setEditStatus("支持粘贴截图 · Ctrl / ⌘ + Enter 保存");
+      updateEditSaveState();
+      input.focus({ preventScroll: true });
+      input.setSelectionRange(input.value.length, input.value.length);
+    } catch (error) {
+      if (requestSerial !== editState.requestSerial) return;
+      editState.loading = false;
+      input.disabled = false;
+      setEditStatus(error instanceof Error ? error.message : String(error), "error");
+      updateEditSaveState();
+      console.error("[linuxdo-wecom] failed to load editable post", error);
+    }
+  }
+
+  async function submitEditedPost() {
+    const { dialog, input } = editUi();
+    const raw = input?.value || "";
+    if (!dialog || dialog.hidden || !editState.postId || editState.loading || editState.saving || editState.uploading) return;
+    if (!raw.trim()) {
+      setEditStatus("消息内容不能为空", "error");
+      return;
+    }
+    const postId = editState.postId;
+    const requestSerial = editState.requestSerial;
+    editState.saving = true;
+    input.disabled = true;
+    setEditStatus("正在保存…", "busy");
+    updateEditSaveState();
+    try {
+      let post = await updateEditablePost(postId, raw);
+      if (requestSerial !== editState.requestSerial) return;
+      if (!applyEditedPost(postId, post)) {
+        post = await fetchEditablePost(postId);
+        if (requestSerial !== editState.requestSerial) return;
+        if (!applyEditedPost(postId, post)) throw new Error("站点未返回更新后的消息内容");
+      }
+      setComposeStatus("消息已编辑", "success", false);
+      closeEditDialog(true);
+    } catch (error) {
+      if (requestSerial !== editState.requestSerial) return;
+      editState.saving = false;
+      input.disabled = false;
+      setEditStatus(error instanceof Error ? error.message : String(error), "error");
+      updateEditSaveState();
+      input.focus({ preventScroll: true });
+      console.error("[linuxdo-wecom] failed to edit post", error);
+    }
   }
 
   async function submitReplyViaApi(raw, replyToPostNumber) {
@@ -5555,11 +6007,18 @@
     throw lastError || new Error("图片上传接口不可用");
   }
 
-  function insertComposerText(text) {
-    const input = composeUi().input;
+  function textareaSelection(input) {
+    const fallback = input?.value.length || 0;
+    const start = Number.isInteger(input?.selectionStart) ? input.selectionStart : fallback;
+    const end = Number.isInteger(input?.selectionEnd) ? input.selectionEnd : start;
+    return Object.freeze({ start, end });
+  }
+
+  function insertTextareaBlock(input, text, selection = textareaSelection(input)) {
     if (!input || !text) return;
-    const start = Number.isInteger(input.selectionStart) ? input.selectionStart : input.value.length;
-    const end = Number.isInteger(input.selectionEnd) ? input.selectionEnd : start;
+    const limit = input.value.length;
+    const start = Math.max(0, Math.min(selection.start, limit));
+    const end = Math.max(start, Math.min(selection.end, limit));
     const before = input.value.slice(0, start);
     const after = input.value.slice(end);
     const prefix = before && !/[\n ]$/.test(before) ? "\n" : "";
@@ -5569,6 +6028,20 @@
     input.setSelectionRange(caret, caret);
     input.dispatchEvent(new Event("input", { bubbles: true }));
     input.focus({ preventScroll: true });
+  }
+
+  function insertComposerInlineText(text) {
+    const input = composeUi().input;
+    if (!input || !text) return;
+    const start = Number.isInteger(input.selectionStart) ? input.selectionStart : input.value.length;
+    const end = Number.isInteger(input.selectionEnd) ? input.selectionEnd : start;
+    input.setRangeText(text, start, end, "end");
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    input.focus({ preventScroll: true });
+  }
+
+  function insertComposerText(text) {
+    insertTextareaBlock(composeUi().input, text);
   }
 
   async function uploadComposerFiles(files) {
@@ -5602,6 +6075,47 @@
     }
   }
 
+  async function uploadEditImages(files, selection) {
+    const images = [...(files || [])].filter(imageFile);
+    if (!images.length) return;
+    if (editState.uploading) {
+      setEditStatus("已有图片正在上传，请等待完成后重试", "error");
+      return;
+    }
+    const { dialog, input } = editUi();
+    if (!dialog || dialog.hidden || !input || editState.loading || editState.saving) {
+      setEditStatus("当前无法上传图片", "error");
+      return;
+    }
+    const requestSerial = editState.requestSerial;
+    editState.uploading = true;
+    input.disabled = true;
+    updateEditSaveState();
+    try {
+      const markdown = [];
+      for (const file of images) {
+        setEditStatus(`正在上传 ${file.name || "剪贴板图片"}…`, "busy");
+        const payload = await uploadImageFile(file);
+        if (requestSerial !== editState.requestSerial) return;
+        markdown.push(uploadedImageMarkdown(payload, file));
+      }
+      insertTextareaBlock(input, markdown.join("\n"), selection);
+      setEditStatus(`已插入 ${markdown.length} 张图片，保存后生效`, "success");
+    } catch (error) {
+      if (requestSerial !== editState.requestSerial) return;
+      const message = error instanceof Error ? error.message : String(error);
+      setEditStatus(`图片上传失败：${message}`, "error");
+      console.error("[linuxdo-wecom] failed to upload edit image", error);
+    } finally {
+      if (requestSerial === editState.requestSerial) {
+        editState.uploading = false;
+        input.disabled = false;
+        updateEditSaveState();
+        input.focus({ preventScroll: true });
+      }
+    }
+  }
+
   function handleComposerFileChange(event) {
     event.preventDefault();
     event.stopPropagation();
@@ -5629,6 +6143,15 @@
     uploadComposerFiles(files);
   }
 
+  function handleEditPaste(event) {
+    const files = transferImages(event);
+    if (!files.length) return;
+    const selection = textareaSelection(event.currentTarget);
+    event.preventDefault();
+    event.stopPropagation();
+    uploadEditImages(files, selection);
+  }
+
   function handleComposerDrop(event) {
     const files = transferImages(event);
     if (!files.length) return;
@@ -5648,6 +6171,11 @@
     const action = button?.dataset.composerAction;
     const panel = button?.closest(".wecom-chat-panel");
     const input = panel?.querySelector(".wecom-chat-compose");
+    if (action === "emoji") {
+      showOfficialEmojiPicker(button).catch((error) => reportComposerError(error, "打开表情面板"));
+      return;
+    }
+    closeOfficialEmojiPicker();
     if (action === "pic" || action === "folder") panel?.querySelector(".wecom-image-input")?.click();
     else if (input) input.focus({ preventScroll: true });
   }
@@ -6033,6 +6561,7 @@
   }
 
   function switchComposerTopic(topicId) {
+    closeOfficialEmojiPicker();
     const { input } = composeUi();
     const previousTopicId = composerBridgeState.topicId;
     if (input && previousTopicId) {
@@ -6218,8 +6747,9 @@
   }
 
   function dismissNativeComposerPopups() {
+    closeOfficialEmojiPicker();
     const selectors = [
-      ".autocomplete", ".autocomplete-container", ".d-editor-popup", ".emoji-picker", ".tag-chooser"
+      ".autocomplete", ".autocomplete-container", ".d-editor-popup", ".tag-chooser"
     ];
     document.querySelectorAll(selectors.join(", ")).forEach((node) => {
       node.hidden = true;
@@ -6583,6 +7113,7 @@
       return;
     }
     const sameTopic = chatState.topicId === topicId;
+    if (!sameTopic) closeEditDialog(true);
     const requestedPost = openingPostNumber(topicId, null);
     chatState.loading = true;
     chatState.topicId = topicId;
@@ -6863,24 +7394,31 @@
   }
 
   function nativePostIdentity(article) {
+    const postArticle = nativePostArticle(article);
     const author = article.querySelector(
       ".topic-meta-data a[href*='/u/'], .names a[href*='/u/'], " +
       ".topic-meta-data [data-user-card], .names [data-user-card], " +
       "a[data-user-card], [data-username]"
     );
     const username = usernameFromElement(author);
-    const id = userIdFromElement(article) || userIdFromElement(author);
+    const id = userIdFromElement(postArticle) || userIdFromElement(author);
     const fullName = article.querySelector(
       ".topic-meta-data .full-name, .names .full-name"
     )?.textContent?.trim() || author?.textContent?.trim() || username || "?";
     return { username: username || "", id, name: fullName };
   }
 
+  function nativePostArticle(element) {
+    if (element.matches("article[data-post-id]")) return element;
+    return element.querySelector("article[data-post-id]") || element;
+  }
+
   function nativePostIsMine(article, author, identity) {
-    if (article.classList.contains("current-user-post")) return true;
+    const postArticle = nativePostArticle(article);
+    if (article.classList.contains("current-user-post") || postArticle.classList.contains("current-user-post")) return true;
     const articleFlag = article.getAttribute("data-current-user-post");
     if (booleanFlag(articleFlag)) return true;
-    const authorId = author.id || userIdFromElement(article);
+    const authorId = author.id || userIdFromElement(postArticle);
     if (authorId && identity.id && authorId === identity.id) return true;
     return Boolean(author.username && identity.username &&
       normalizeUsername(author.username) === normalizeUsername(identity.username));
@@ -6900,7 +7438,8 @@
         article.dataset.postNumber || (article.id || "").replace("post_", "")
       );
       if (!number || number <= chatState.renderedLastNumber) continue;
-      const articleTopicId = Number(article.dataset.topicId || article.getAttribute("data-topic-id")) || 0;
+      const postArticle = nativePostArticle(article);
+      const articleTopicId = Number(postArticle.dataset.topicId || article.dataset.topicId) || 0;
       if (articleTopicId && articleTopicId !== Number(chatState.topicId)) continue;
       const cooked = article.querySelector(".cooked");
       if (!cooked) continue;
@@ -6910,7 +7449,7 @@
       const username = author.username || "?";
       const mine = nativePostIsMine(article, author, current);
       const post = {
-        id: Number(article.dataset.postId || article.dataset.postIdValue) || undefined,
+        id: Number(postArticle.dataset.postId || article.dataset.postIdValue) || undefined,
         post_number: number,
         username,
         name: author.name,
@@ -7027,6 +7566,8 @@
   function removePanels() {
     closeNotifMenu();
     closeImageViewer();
+    closeEditDialog(true);
+    closeOfficialEmojiPicker();
     document.documentElement.classList.remove("wecom-members-open");
     document.querySelector(".wecom-list-panel")?.remove();
     document.querySelector(".wecom-chat-panel")?.remove();
@@ -7037,6 +7578,7 @@
     document.querySelector(".wecom-strip")?.remove();
     document.querySelector(".wecom-titlebar")?.remove();
     document.querySelector(".wecom-theme-menu")?.remove();
+    document.querySelector(".wecom-edit-dialog")?.remove();
   }
 
   function applyTheme() {
@@ -7148,8 +7690,8 @@
       });
     }
 
-    const WECOM_UI_SEL = ".wecom-list-panel, .wecom-chat-panel, .wecom-member-panel, .wecom-image-viewer, .wecom-rail, .wecom-strip, .wecom-titlebar, .wecom-mode-fab, .wecom-theme-menu, #linuxdo-wecom-theme";
-    const NATIVE_BRIDGE_SEL = "#reply-control, .autocomplete, .autocomplete-container, .d-editor-popup, .emoji-picker, .tag-chooser";
+    const WECOM_UI_SEL = ".wecom-list-panel, .wecom-chat-panel, .wecom-member-panel, .wecom-image-viewer, .wecom-edit-dialog, .wecom-rail, .wecom-strip, .wecom-titlebar, .wecom-mode-fab, .wecom-theme-menu, #linuxdo-wecom-theme";
+    const NATIVE_BRIDGE_SEL = "#reply-control, .autocomplete, .autocomplete-container, .d-editor-popup, [data-identifier='emoji-picker'], .tag-chooser";
     const observer = new MutationObserver((mutations) => {
       // 忽略我们自己面板内部的 DOM 变动，否则点开筛选会立刻触发 applyTheme 回写/闪断
       const external = mutations.some((m) => {
@@ -7185,7 +7727,6 @@
       window.__wecomComposerShortcutGuardBound = true;
       window.addEventListener("keydown", guardComposerShortcut, true);
     }
-
     // 定时同步头像通知角标（currentUser 未读数会变）
     if (!window.__wecomNotifBadgeTimer) {
       window.__wecomNotifBadgeTimer = setInterval(() => {
