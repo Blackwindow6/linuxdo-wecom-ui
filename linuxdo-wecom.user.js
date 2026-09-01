@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Linux DO · 企业微信 IM 外观
 // @namespace    https://linux.do/
-// @version      0.5.4
+// @version      0.5.7
 // @description  将 Linux DO 换成企业微信 5.x 桌面端风格；支持浅色/深色/跟随系统，并保留原站交互。
 // @author       Richy
 // @match        https://linux.do/*
@@ -122,6 +122,7 @@
     external: `<svg width="18" height="18" viewBox="0 0 24 24" fill="none"><path d="M14 5h5v5M19 5l-8 8" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/><path d="M11 7H7a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2v-4" stroke="currentColor" stroke-width="1.6"/></svg>`,
     reply: `<svg width="18" height="18" viewBox="0 0 24 24" fill="none"><path d="M9 14L4 9l5-5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/><path d="M4 9h10a6 6 0 0 1 0 12h-3" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>`,
     edit: `<svg width="18" height="18" viewBox="0 0 24 24" fill="none"><path d="M5 16.8V19h2.2L18.4 7.8l-2.2-2.2L5 16.8Z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="m14.8 7 2.2 2.2" stroke="currentColor" stroke-width="1.6"/><path d="M12.5 19H19" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>`,
+    bookmark: `<svg width="18" height="18" viewBox="0 0 24 24" fill="none"><path d="M7 5.5A1.5 1.5 0 0 1 8.5 4h7A1.5 1.5 0 0 1 17 5.5V20l-5-3.2L7 20V5.5Z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg>`,
     menu: `<svg width="18" height="18" viewBox="0 0 24 24" fill="none"><path d="M4 7h16M7 12h10M10 17h4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>`,
     chevronDown: `<svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M6 9l6 6 6-6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>`,
     chevronUp: `<svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M6 15l6-6 6 6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>`,
@@ -186,6 +187,20 @@
     const uname = user && String(user.username || "").trim();
     if (uname) return uname;
     return String(fallback || "?").trim() || "?";
+  }
+
+  function userCardIdentity(user) {
+    const username = String(user?.username || "").trim();
+    if (!username) return null;
+    const label = `查看 ${userDisplayName(user, username)} 的资料`;
+    return Object.freeze({ username, label });
+  }
+
+  function userCardAttributes(user) {
+    const identity = userCardIdentity(user);
+    if (!identity) return "";
+    return ` data-user-card="${escapeHtml(identity.username)}" role="button" tabindex="0"` +
+      ` aria-label="${escapeHtml(identity.label)}" title="${escapeHtml(identity.label)}"`;
   }
 
   /* ---------- 会话伪装头像（圆角矩形单字） ---------- */
@@ -754,6 +769,30 @@
       font-size: 9px; line-height: 14px; text-align: center;
       border-radius: 7px; font-weight: 500;
     }
+    /*
+     * 原生用户菜单必须留在 .user-menu-dropdown-wrapper 内：
+     * Discourse 用该父层判断“点击菜单内/外”，拆出子节点会让所有菜单项在
+     * pointerdown 阶段被误判为外部点击。打开时仅解除顶栏祖先的裁剪。
+     */
+    .${ROOT_CLASS}.wecom-notif-open .d-header-wrap,
+    .${ROOT_CLASS}.wecom-notif-open .d-header {
+      overflow: visible !important;
+      opacity: 1 !important;
+      visibility: visible !important;
+      pointer-events: none !important;
+      clip: auto !important;
+      z-index: 450 !important;
+    }
+    .${ROOT_CLASS}.wecom-notif-open .user-menu-dropdown-wrapper {
+      overflow: visible !important;
+      pointer-events: none !important;
+      visibility: visible !important;
+    }
+    .${ROOT_CLASS}.wecom-notif-open .d-header .contents > :not(.panel),
+    .${ROOT_CLASS}.wecom-notif-open .d-header .panel > :not(.user-menu-dropdown-wrapper) {
+      visibility: hidden !important;
+      pointer-events: none !important;
+    }
     /* 左侧栏头像通知：仅在 html.wecom-notif-open 时显示，避免关不掉 */
     .${ROOT_CLASS} .user-menu.wecom-user-menu-float,
     .${ROOT_CLASS} .user-menu.revamped.menu-panel.wecom-user-menu-float,
@@ -1274,6 +1313,19 @@
       color: #fff; font-size: 14px; font-weight: 600;
     }
     .wecom-msg-avatar img { width: 100%; height: 100%; object-fit: cover; }
+    .wecom-chat-panel [data-user-card],
+    .wecom-member-panel [data-user-card] { cursor: pointer; }
+    .wecom-chat-panel [data-user-card]:focus-visible,
+    .wecom-member-panel [data-user-card]:focus-visible {
+      outline: 2px solid var(--wc-accent);
+      outline-offset: 2px;
+    }
+    .wecom-topic-bookmark.is-bookmarked {
+      color: var(--wc-accent);
+      background: var(--wc-accent-soft);
+    }
+    .wecom-topic-bookmark.is-bookmarked svg path { fill: currentColor; }
+    .wecom-chat-panel[data-empty="1"] .wecom-topic-bookmark { display: none; }
     .wecom-msg-content { min-width: 0; display: flex; flex-direction: column; position: relative; }
     .wecom-msg-me .wecom-msg-content { align-items: flex-end; }
     .wecom-msg-name { font-size: 12px; color: var(--wc-text-3); margin-bottom: 4px; }
@@ -1342,7 +1394,9 @@
     }
     .wecom-msg-tool svg { width: 15px; height: 15px; }
     .wecom-msg-tool:hover { background: var(--wc-hover); color: var(--wc-accent); }
-    .wecom-msg-tool.liked { color: var(--wc-accent); }
+    .wecom-msg-tool.liked,
+    .wecom-msg-tool.bookmarked { color: var(--wc-accent); }
+    .wecom-msg-tool.bookmarked svg path { fill: currentColor; }
 
     .wecom-chat-empty, .wecom-chat-error, .wecom-chat-loading {
       margin: auto;
@@ -3044,6 +3098,10 @@
       background: rgba(255, 255, 255, .08) !important;
       color: var(--wc-text) !important;
     }
+    html.${ROOT_CLASS}.wecom-dark .wecom-topic-bookmark.is-bookmarked {
+      background: rgba(51, 140, 255, .2) !important;
+      color: #80B7FF !important;
+    }
     html.${ROOT_CLASS}.wecom-dark .wecom-chat-body {
       background-color: var(--wc-surface-1) !important;
       color: var(--wc-text) !important;
@@ -3083,7 +3141,8 @@
       color: var(--wc-text-2) !important;
     }
     html.${ROOT_CLASS}.wecom-dark .wecom-msg-tool:hover,
-    html.${ROOT_CLASS}.wecom-dark .wecom-msg-tool.liked {
+    html.${ROOT_CLASS}.wecom-dark .wecom-msg-tool.liked,
+    html.${ROOT_CLASS}.wecom-dark .wecom-msg-tool.bookmarked {
       color: #338CFF !important;
     }
     html.${ROOT_CLASS}.wecom-dark .wecom-msg-tools {
@@ -4140,10 +4199,7 @@
 
   function positionNotifMenu(menu) {
     if (!menu || !notifWantOpen) return;
-    // 顶栏被 opacity:0 / clip 藏起来；菜单必须挪到 body 才能看见
-    if (menu.parentElement !== document.body) {
-      document.body.appendChild(menu);
-    }
+    // 不得移动节点：原版 wrapper 依赖父子关系识别菜单内点击。
     menu.classList.add("wecom-user-menu-float", "show-avatars");
     // 显隐交给 html.wecom-notif-open；这里清掉 Discourse 内联定位
     menu.style.display = "";
@@ -4170,7 +4226,7 @@
     return true;
   }
 
-  /** 短暂解除顶栏隐藏，让原生 click / Ember 能创建菜单，再靠 observer 挪到 body */
+  /** 短暂解除顶栏隐藏，让原生 click / Ember 能创建菜单。 */
   function unlockHeaderForNotifClick() {
     let style = document.getElementById("wecom-unlock-header");
     if (!style) {
@@ -4267,30 +4323,26 @@
     if (avatar) avatar.classList.toggle("is-notif-pinned", notifPinned);
   }
 
-  function hideNotifMenuNode(menu) {
-    if (!menu) return;
-    delete menu.dataset.wecomHoverBound;
-    // 先靠 html.wecom-notif-open 隐藏；再尽量拆掉节点，防止 Ember 残留
-    menu.classList.remove("show-avatars");
-    try {
-      menu.remove();
-    } catch {
-      menu.classList.remove("wecom-user-menu-float");
-      menu.style.display = "none";
-    }
-  }
-
-  function closeNotifMenu() {
+  function resetNotifPresentation() {
     notifWantOpen = false;
     notifOpenInFlight = false;
     clearNotifLeaveTimer();
     setNotifPinned(false);
-    setNotifOpenClass(false); // 关键：立刻靠 CSS 藏掉
+    setNotifOpenClass(false);
     lockHeaderAfterNotif();
-    // 藏掉所有我们捞出来的浮层副本
-    document.querySelectorAll(".user-menu.wecom-user-menu-float, .wecom-user-menu-float").forEach(hideNotifMenuNode);
-    hideNotifMenuNode(findUserMenu());
-    try { setUserMenuVisible(false); } catch { /* ignore */ }
+  }
+
+  function closeNotifMenu() {
+    const hadNativeMenu = Boolean(findUserMenu());
+    resetNotifPresentation();
+    try {
+      const closed = setUserMenuVisible(false);
+      if (!closed && hadNativeMenu && !clickUserMenuToggle()) {
+        console.error("[linuxdo-wecom] closeNotifMenu: native menu close unavailable");
+      }
+    } catch (err) {
+      console.error("[linuxdo-wecom] closeNotifMenu failed", err);
+    }
     // 看过通知后刷新角标
     setTimeout(() => syncRail(), 400);
   }
@@ -4328,7 +4380,9 @@
     notifMenuObserver = new MutationObserver(() => {
       if (getViewMode() === "native" || otherThemeActive()) return;
       if (!notifWantOpen) return;
-      adoptNotifMenuIfAny();
+      if (adoptNotifMenuIfAny() || notifOpenInFlight) return;
+      // 原版路由或菜单项主动关闭后，同步清掉企微侧的钉住/显示状态。
+      if (getHeaderService()?.userVisible === false) resetNotifPresentation();
     });
     notifMenuObserver.observe(document.body, { childList: true, subtree: true });
   }
@@ -4354,12 +4408,19 @@
     document.addEventListener("mousedown", onOutside, true);
   }
 
+  function stopNotifAvatarPointer(event) {
+    if (getViewMode() === "native" || otherThemeActive()) return;
+    event.stopPropagation();
+  }
+
   function bindRailAvatarNotif(rail) {
     const avatar = rail?.querySelector(".wecom-rail-avatar");
     if (!avatar || avatar.dataset.notifBound === "1") return;
     avatar.dataset.notifBound = "1";
     avatar.removeAttribute("title");
     ensureNotifOutsideClose();
+    avatar.addEventListener("pointerdown", stopNotifAvatarPointer);
+    avatar.addEventListener("mousedown", stopNotifAvatarPointer);
 
     avatar.addEventListener("mouseenter", () => {
       if (getViewMode() === "native" || otherThemeActive()) return;
@@ -4926,6 +4987,7 @@
     hasNewer: false,
     title: "",
     replyTotal: 0,
+    topicBookmarked: false,
     pinnedPost: 0,
     pinningScroll: false
   };
@@ -5318,7 +5380,8 @@
     let panel = document.querySelector(".wecom-chat-panel");
     if (panel && (!panel.querySelector(".wecom-chat-compose") || !panel.querySelector(".wecom-pinned-banner") ||
       !panel.querySelector(".wecom-watermark-panel") || !panel.querySelector(".wecom-image-input") ||
-      !panel.querySelector('[data-composer-action="emoji"]') || !panel.querySelector('[data-composer-action="pic"]'))) {
+      !panel.querySelector('[data-composer-action="emoji"]') || !panel.querySelector('[data-composer-action="pic"]') ||
+      !panel.querySelector(".wecom-topic-bookmark"))) {
       panel.remove();
       panel = null;
     }
@@ -5330,6 +5393,7 @@
       bindWatermarkSettings(panel);
       renderWatermark(getWatermarkSettings());
       wireComposeButton(panel);
+      bindUserCardEvents(panel);
       ensureEditDialog();
       return panel;
     }
@@ -5367,6 +5431,7 @@
         </div>
         <div class="wecom-chat-tools">${headTools}</div>
         <div class="wecom-chat-actions">
+          <button type="button" class="wecom-icon-btn wecom-topic-bookmark" title="收藏话题" aria-label="收藏话题" aria-pressed="false">${ICONS.bookmark}</button>
           <button type="button" class="wecom-icon-btn wecom-watermark-settings" title="背景水印设置" aria-label="背景水印设置" aria-expanded="false" aria-pressed="false">${ICONS.watermark}</button>
           <button class="wecom-icon-btn wecom-chat-refresh" title="刷新本话题">${ICONS.refresh}</button>
           <button class="wecom-icon-btn wecom-chat-native" title="切换原生视图">${ICONS.external}</button>
@@ -5411,6 +5476,7 @@
     `;
     document.body.appendChild(panel);
     bindChatPanelEvents(panel);
+    bindUserCardEvents(panel);
     bindWatermarkSettings(panel);
     renderWatermark(getWatermarkSettings());
     ensureEditDialog();
@@ -5425,9 +5491,9 @@
   function memberAvatarHtml(user) {
     const name = userDisplayName(user, user?.username || "?");
     if (!isMaskAvatar() && user?.avatar_template) {
-      return `<span class="wecom-member-avatar"><img src="${escapeHtml(fullAvatarUrl(user.avatar_template))}" alt=""></span>`;
+      return `<span class="wecom-member-avatar"${userCardAttributes(user)}><img src="${escapeHtml(fullAvatarUrl(user.avatar_template))}" alt=""></span>`;
     }
-    return `<span class="wecom-member-avatar" style="background:${avatarColor(name)}">${escapeHtml(avatarLetter(name))}</span>`;
+    return `<span class="wecom-member-avatar" style="background:${avatarColor(name)}"${userCardAttributes(user)}>${escapeHtml(avatarLetter(name))}</span>`;
   }
 
   function topicParticipants(data, posts) {
@@ -5449,7 +5515,10 @@
 
   function ensureMemberPanel() {
     let panel = document.querySelector(".wecom-member-panel");
-    if (panel) return panel;
+    if (panel) {
+      bindUserCardEvents(panel);
+      return panel;
+    }
     panel = document.createElement("aside");
     panel.className = "wecom-member-panel";
     panel.innerHTML = `
@@ -5459,6 +5528,7 @@
       </div>
       <div class="wecom-member-body"></div>`;
     document.body.appendChild(panel);
+    bindUserCardEvents(panel);
     return panel;
   }
 
@@ -5481,11 +5551,14 @@
     const pinned = posts.find((post) => post.pinned || post.pinned_at);
     if (!pinned) {
       banner.style.display = "none";
+      syncUserCardElement(".wecom-pinned-avatar", null);
       return;
     }
     const name = userDisplayName(pinned, pinned.username || "?");
     const text = String(pinned.cooked || "").replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
-    banner.querySelector(".wecom-pinned-avatar").textContent = avatarLetter(name);
+    const avatar = banner.querySelector(".wecom-pinned-avatar");
+    avatar.textContent = avatarLetter(name);
+    syncUserCardElement(".wecom-pinned-avatar", pinned);
     banner.querySelector(".wecom-pinned-content").innerHTML = `<b>${escapeHtml(name)}置顶了</b><span>${escapeHtml(text.slice(0, 96) || "[消息]")}</span>`;
     banner.style.display = "flex";
   }
@@ -5577,6 +5650,12 @@
         openImageViewer(previewImage);
         return;
       }
+      if (e.target.closest(".wecom-topic-bookmark")) {
+        e.preventDefault();
+        e.stopPropagation();
+        openOriginalTopicBookmark();
+        return;
+      }
       if (e.target.closest(".wecom-chat-refresh")) {
         if (chatState.topicId) loadTopic(chatState.topicId, true);
         return;
@@ -5605,6 +5684,10 @@
         e.preventDefault();
         e.stopPropagation();
         replyToPost(Number(msg.dataset.postNumber));
+      } else if (toolBtn.dataset.action === "bookmark") {
+        e.preventDefault();
+        e.stopPropagation();
+        openOriginalPostBookmark(msg).catch(reportPostBookmarkError);
       } else if (toolBtn.dataset.action === "edit") {
         e.preventDefault();
         e.stopPropagation();
@@ -5633,6 +5716,7 @@
     chatState.topicId = null;
     chatState.slug = "";
     chatState.replyTotal = 0;
+    setTopicBookmarkState(false);
     chatState.pinnedPost = 0;
     switchComposerTopic(null);
     const panel = document.querySelector(".wecom-chat-panel");
@@ -5650,6 +5734,7 @@
     if (chips) chips.innerHTML = "";
     const chatAvatar = document.querySelector(".wecom-chat-avatar");
     if (chatAvatar) chatAvatar.style.display = "none";
+    syncUserCardElement(".wecom-chat-avatar", null);
     document.documentElement.classList.remove("wecom-members-open");
     document.querySelector(".wecom-member-panel")?.remove();
     const pinned = document.querySelector(".wecom-pinned-banner");
@@ -5689,12 +5774,18 @@
       avatar = escapeHtml(avatarLetter(displayName));
     }
     const liked = post.id && likedPosts.has(post.id) ? " liked" : "";
+    const isBookmarked = booleanFlag(post.bookmarked) || Boolean(post.bookmark_id);
+    const bookmarkClass = isBookmarked ? " bookmarked" : "";
+    const bookmarkLabel = isBookmarked ? "编辑楼层书签" : "收藏本楼层";
+    const bookmarkButton = post.id
+      ? `<button type="button" class="wecom-msg-tool${bookmarkClass}" data-action="bookmark" title="${bookmarkLabel}" aria-label="${bookmarkLabel}" aria-pressed="${isBookmarked}">${ICONS.bookmark}</button>`
+      : "";
     const editButton = me && (post.id || post.post_number)
       ? `<button type="button" class="wecom-msg-tool" data-action="edit" title="编辑">${ICONS.edit}</button>`
       : "";
     return `
       <div class="wecom-msg wecom-msg-${side}" data-post-number="${post.post_number}"${post.id ? ` data-post-id="${post.id}"` : ""}${me ? ' data-mine="1"' : ""}>
-        <span class="wecom-msg-avatar" style="background:${avatarBg}">${avatar}</span>
+        <span class="wecom-msg-avatar" style="background:${avatarBg}"${userCardAttributes(post)}>${avatar}</span>
         <div class="wecom-msg-content">
           <span class="wecom-msg-name">${escapeHtml(displayName)}</span>
           <div class="wecom-msg-bubble">${post.cooked || ""}</div>
@@ -5705,6 +5796,7 @@
           <div class="wecom-msg-tools">
             <button type="button" class="wecom-msg-tool${liked}" data-action="like" title="点赞">${ICONS.like}</button>
             <button type="button" class="wecom-msg-tool" data-action="reply" title="回复">${ICONS.reply}</button>
+            ${bookmarkButton}
             ${editButton}
           </div>
         </div>
@@ -6279,6 +6371,180 @@
     } catch {
       return null;
     }
+  }
+
+  function syncUserCardElement(selector, user) {
+    const element = document.querySelector(selector);
+    if (!element) return;
+    for (const attribute of ["data-user-card", "role", "tabindex", "aria-label", "title"]) {
+      element.removeAttribute(attribute);
+    }
+    const identity = userCardIdentity(user);
+    if (!identity) return;
+    element.dataset.userCard = identity.username;
+    element.setAttribute("role", "button");
+    element.tabIndex = 0;
+    element.setAttribute("aria-label", identity.label);
+    element.title = identity.label;
+  }
+
+  function openOriginalUserCard(trigger, event) {
+    const username = String(trigger?.dataset?.userCard || "").trim();
+    if (!username) throw new Error("用户头像缺少 data-user-card");
+    const appEvents = safeLookup(getEmberOwner(), "service:app-events");
+    if (typeof appEvents?.trigger !== "function") {
+      throw new Error("无法连接 Discourse 原生用户卡事件服务");
+    }
+    appEvents.trigger("topic-header:trigger-user-card", username, trigger, event);
+  }
+
+  function userCardTriggerForEvent(event) {
+    if (!(event.target instanceof Element)) return null;
+    const trigger = event.target.closest("[data-user-card]");
+    return trigger && event.currentTarget.contains(trigger) ? trigger : null;
+  }
+
+  function handleUserCardClick(event) {
+    if (event.button !== 0) return;
+    const trigger = userCardTriggerForEvent(event);
+    if (!trigger) return;
+    event.preventDefault();
+    event.stopPropagation();
+    openOriginalUserCard(trigger, event);
+  }
+
+  function handleUserCardKeydown(event) {
+    if (event.key !== "Enter" && event.key !== " ") return;
+    const trigger = userCardTriggerForEvent(event);
+    if (!trigger) return;
+    event.preventDefault();
+    event.stopPropagation();
+    openOriginalUserCard(trigger, event);
+  }
+
+  function bindUserCardEvents(root) {
+    if (!root || root.dataset.userCardBound === "1") return;
+    root.dataset.userCardBound = "1";
+    root.addEventListener("click", handleUserCardClick);
+    root.addEventListener("keydown", handleUserCardKeydown);
+  }
+
+  function topicBookmarkFrom(data) {
+    const bookmarks = Array.isArray(data?.bookmarks) ? data.bookmarks : [];
+    return bookmarks.find((bookmark) => bookmark?.bookmarkable_type === "Topic") || null;
+  }
+
+  function setTopicBookmarkState(bookmarked) {
+    chatState.topicBookmarked = Boolean(bookmarked);
+    const button = document.querySelector(".wecom-topic-bookmark");
+    if (!button) return;
+    const active = chatState.topicBookmarked;
+    const label = active ? "编辑话题书签" : "收藏话题";
+    button.classList.toggle("is-bookmarked", active);
+    button.setAttribute("aria-pressed", active ? "true" : "false");
+    button.setAttribute("aria-label", label);
+    button.title = label;
+  }
+
+  function handleBookmarksChanged(data, attachedTo) {
+    if (attachedTo?.target === "topic") {
+      if (Number(attachedTo.targetId) === Number(chatState.topicId)) {
+        setTopicBookmarkState(Boolean(data));
+      }
+      return;
+    }
+    if (attachedTo?.target === "post") {
+      setPostBookmarkState(Number(attachedTo.targetId), Boolean(data));
+    }
+  }
+
+  const bookmarkEventTarget = Object.freeze({ changed: handleBookmarksChanged });
+  let bookmarkEventsService = null;
+
+  function bindBookmarkEvents() {
+    const appEvents = safeLookup(getEmberOwner(), "service:app-events");
+    if (typeof appEvents?.on !== "function") return false;
+    if (bookmarkEventsService === appEvents) return true;
+    bookmarkEventsService?.off?.("bookmarks:changed", bookmarkEventTarget, "changed");
+    appEvents.on("bookmarks:changed", bookmarkEventTarget, "changed");
+    bookmarkEventsService = appEvents;
+    return true;
+  }
+
+  function originalTopicBookmarkModel(owner, model) {
+    const bookmarks = Array.isArray(model?.bookmarks) ? model.bookmarks : [];
+    const existing = bookmarks.find((bookmark) => bookmark?.bookmarkable_type === "Topic");
+    if (existing) return existing;
+    const currentUser = safeLookup(owner, "service:current-user");
+    const bookmarkApi = safeLookup(owner, "service:bookmark-api");
+    if (!currentUser) throw new Error("登录后才能收藏话题");
+    if (typeof bookmarkApi?.buildNewBookmark !== "function") {
+      throw new Error("站点未加载 Discourse 原生书签服务");
+    }
+    return bookmarkApi.buildNewBookmark("Topic", model.id);
+  }
+
+  function openOriginalTopicBookmark() {
+    const owner = getEmberOwner();
+    const controller = safeLookup(owner, "controller:topic");
+    const model = getTopicModel(owner);
+    const modelId = Number(model?.get?.("id") ?? model?.id);
+    if (!controller || typeof controller._modifyTopicBookmark !== "function") {
+      throw new Error("无法连接 Discourse 原生话题书签控制器");
+    }
+    if (modelId !== Number(chatState.topicId)) {
+      throw new Error(`原生话题模型 ${modelId || "未知"} 与当前话题 ${chatState.topicId} 不一致`);
+    }
+    if (!bindBookmarkEvents()) throw new Error("无法监听 Discourse 原生书签状态");
+    return controller._modifyTopicBookmark(originalTopicBookmarkModel(owner, model));
+  }
+
+  function setPostBookmarkState(postId, bookmarked) {
+    if (!Number.isInteger(postId) || postId <= 0) return;
+    const message = document.querySelector(`.wecom-msg[data-post-id="${postId}"]`);
+    const button = message?.querySelector('[data-action="bookmark"]');
+    if (!button) return;
+    const active = Boolean(bookmarked);
+    const label = active ? "编辑楼层书签" : "收藏本楼层";
+    button.classList.toggle("bookmarked", active);
+    button.setAttribute("aria-pressed", active ? "true" : "false");
+    button.setAttribute("aria-label", label);
+    button.title = label;
+  }
+
+  async function resolveOriginalPostModel(model, postId, postNumber) {
+    const loaded = findLoadedPost(model, postNumber);
+    const post = loaded || await model?.postById?.(postId);
+    const resolvedId = Number(post?.get?.("id") ?? post?.id);
+    if (!post || resolvedId !== postId) {
+      throw new Error(`无法载入楼层 #${postNumber} 的原生帖子模型`);
+    }
+    return post;
+  }
+
+  async function openOriginalPostBookmark(message) {
+    const postId = Number(message?.dataset?.postId);
+    const postNumber = Number(message?.dataset?.postNumber);
+    const topicId = Number(chatState.topicId);
+    if (!postId || !postNumber || !topicId) throw new Error("无法确定待收藏楼层");
+    const owner = getEmberOwner();
+    const controller = safeLookup(owner, "controller:topic");
+    const model = getTopicModel(owner);
+    const modelId = Number(model?.get?.("id") ?? model?.id);
+    if (typeof controller?.toggleBookmark !== "function") {
+      throw new Error("无法连接 Discourse 原生楼层书签控制器");
+    }
+    if (modelId !== topicId) throw new Error("原生话题模型与当前话题不一致");
+    if (!bindBookmarkEvents()) throw new Error("无法监听 Discourse 原生书签状态");
+    const post = await resolveOriginalPostModel(model, postId, postNumber);
+    if (Number(chatState.topicId) !== topicId) throw new Error("话题已切换，请重新收藏");
+    return controller.toggleBookmark(post);
+  }
+
+  function reportPostBookmarkError(error) {
+    const message = error instanceof Error ? error.message : String(error || "未知错误");
+    console.error("[linuxdo-wecom] post bookmark bridge failed", error);
+    setComposeStatus(`打开楼层书签失败：${message}`, "error", true);
   }
 
   function findLoadedPost(topic, postNumber) {
@@ -7158,6 +7424,8 @@
       chatState.hasNewer = chatState.renderedLastIdx >= 0 &&
         chatState.renderedLastIdx < chatState.stream.length - 1;
       chatState.title = data.title || "";
+      setTopicBookmarkState(Boolean(topicBookmarkFrom(data)));
+      bindBookmarkEvents();
 
       const panel = document.querySelector(".wecom-chat-panel");
       if (panel) panel.dataset.empty = "0";
@@ -7188,6 +7456,7 @@
         chatAvatar.style.display = "";
         const op = posts.find((p) => p.post_number === 1) || posts[0] || null;
         const authorName = userDisplayName(op, (op && op.username) || chatState.title || "?");
+        syncUserCardElement(".wecom-chat-avatar", op);
         if (!isMaskAvatar() && op && op.avatar_template) {
           chatAvatar.style.background = "transparent";
           chatAvatar.innerHTML = `<img src="${escapeHtml(fullAvatarUrl(op.avatar_template))}" alt="" loading="lazy">`;
