@@ -54,6 +54,14 @@
 ### 编辑修改已发送帖子
 <img width="998" height="765" alt="image" src="https://github.com/user-attachments/assets/d7747160-d31a-4177-a64a-e6db685c1580" />
 
+### 书签收藏功能
+<img width="1596" height="771" alt="image" src="https://github.com/user-attachments/assets/d3b5d3b9-4779-44a2-8550-c8a6c6a5af74" />
+
+### 点击头像查看主页
+<img width="1218" height="458" alt="image" src="https://github.com/user-attachments/assets/26c3781d-1bd0-4073-8b86-fcb8050a6226" />
+
+
+
 
 
 > 以上截图由本地测试数据或公开话题页面生成，不包含私聊内容。
