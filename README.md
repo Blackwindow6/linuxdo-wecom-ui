@@ -3,7 +3,7 @@
 把 [Linux DO](https://linux.do/) 的网页布局换成企业微信 5.x 桌面端风格，同时继续使用原站真实数据、路由、通知与回复能力。
 
 - 作者：**Richy**
-- 当前版本：**0.5.8**
+- 当前版本：**0.5.9**
 - 用户脚本：[`linuxdo-wecom.user.js`](linuxdo-wecom.user.js)
 - 许可证：MIT
 

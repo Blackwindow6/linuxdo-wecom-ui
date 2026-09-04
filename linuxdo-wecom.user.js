@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Linux DO · 企业微信 IM 外观
 // @namespace    https://linux.do/
-// @version      0.5.8
+// @version      0.5.9
 // @description  将 Linux DO 换成企业微信 5.x 桌面端风格；支持浅色/深色/跟随系统，并保留原站交互。
 // @author       Richy
 // @match        https://linux.do/*
@@ -7769,7 +7769,8 @@
         (data.post_stream && data.post_stream.posts) || data.posts || [],
         ids
       );
-      appendFreshPosts(posts, body);
+      // 用户滚动触底触发分页时，保留当前位置，避免追加后再次自动触底。
+      appendFreshPosts(posts, body, { scroll: false });
     } catch { /* 保留现状 */ } finally {
       chatState.loading = false;
     }
