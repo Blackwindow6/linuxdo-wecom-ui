@@ -3,4 +3,5 @@
 node_modules/
 __pycache__/
 *.py[cod]
-tests/
+tests/*
+!tests/update_check.test.cjs

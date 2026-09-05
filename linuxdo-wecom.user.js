@@ -1,11 +1,14 @@
 // ==UserScript==
 // @name         Linux DO · 企业微信 IM 外观
 // @namespace    https://linux.do/
-// @version      0.5.9
+// @version      0.5.10
 // @description  将 Linux DO 换成企业微信 5.x 桌面端风格；支持浅色/深色/跟随系统，并保留原站交互。
 // @author       Richy
 // @match        https://linux.do/*
 // @icon         https://linux.do/favicon.ico
+// @homepageURL  https://github.com/Blackwindow6/linuxdo-wecom-ui
+// @updateURL    https://raw.githubusercontent.com/Blackwindow6/linuxdo-wecom-ui/main/linuxdo-wecom.meta.js
+// @downloadURL  https://raw.githubusercontent.com/Blackwindow6/linuxdo-wecom-ui/main/linuxdo-wecom.user.js
 // @grant        none
 // @run-at       document-start
 // ==/UserScript==
@@ -992,6 +995,32 @@
     .wecom-theme-menu button:hover { background: var(--wc-hover); color: var(--wc-text); }
     .wecom-theme-menu button.is-active { background: var(--wc-accent-soft); color: var(--wc-accent); font-weight: 600; }
     .wecom-theme-menu button svg { width: 16px; height: 16px; flex: 0 0 auto; }
+    .wecom-theme-menu .wecom-check-update { margin-top: 6px; border-top: 1px solid var(--wc-border); border-radius: 0; }
+    /* 更新提示沿用企微配色，不遮罩、不抢占输入焦点。 */
+    .wecom-update-notice {
+      position: fixed; right: 20px; bottom: 20px; z-index: 1300;
+      box-sizing: border-box; width: 420px; max-width: calc(100vw - 24px);
+      padding: 16px; border: 1px solid var(--wc-border); border-radius: 10px;
+      background: var(--wc-bg); color: var(--wc-text);
+      box-shadow: 0 8px 32px rgba(31,35,41,.18); font: 13px/1.6 var(--wc-font);
+    }
+    .wecom-update-notice-title { display: flex; align-items: center; gap: 7px; font-size: 15px; font-weight: 600; }
+    .wecom-update-notice-title svg { color: var(--wc-blue); flex-shrink: 0; }
+    .wecom-update-notice-message { margin-top: 6px; color: var(--wc-text-2); white-space: pre-line; }
+    .wecom-update-notice-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; margin-top: 12px; }
+    .wecom-update-notice a, .wecom-update-notice button {
+      box-sizing: border-box; margin: 0; font: inherit; text-decoration: none;
+      cursor: pointer; border: 0; box-shadow: none;
+    }
+    .wecom-update-notice .wecom-update-install {
+      display: inline-flex; align-items: center; min-height: 32px; padding: 4px 13px;
+      background: var(--wc-blue); color: #fff; border-radius: 5px; font-weight: 600;
+    }
+    .wecom-update-notice .wecom-update-install:hover { background: var(--wc-blue-hover); }
+    .wecom-update-notice .wecom-update-github { color: var(--wc-text-2); }
+    .wecom-update-notice .wecom-update-dismiss { margin-left: auto; padding: 4px 0; background: transparent; color: var(--wc-text-3); }
+    .wecom-update-notice :focus-visible { outline: 2px solid var(--wc-blue); outline-offset: 3px; }
+    .wecom-update-notice [hidden] { display: none !important; }
     .wecom-rail-more.is-on { color: var(--wc-blue); background: #FFFFFF; box-shadow: 0 1px 4px rgba(31,35,41,.06); }
     .wecom-rail-more.is-on svg { color: var(--wc-blue); }
     /* 右边缘拖拽柄：左右拉伸 rail */
@@ -3698,9 +3727,17 @@
       `<div class="wecom-theme-menu-title">外观模式</div>` +
       `<button type="button" role="menuitemradio" data-theme-mode="light" aria-checked="false">${ICONS.sun}<span>浅色模式</span></button>` +
       `<button type="button" role="menuitemradio" data-theme-mode="dark" aria-checked="false">${ICONS.moon}<span>深色模式</span></button>` +
-      `<button type="button" role="menuitemradio" data-theme-mode="system" aria-checked="false">${ICONS.monitorSmall}<span>跟随系统</span></button>`;
+      `<button type="button" role="menuitemradio" data-theme-mode="system" aria-checked="false">${ICONS.monitorSmall}<span>跟随系统</span></button>` +
+      `<button type="button" role="menuitem" class="wecom-check-update">${ICONS.refresh}<span>检查脚本更新</span></button>`;
     document.body.appendChild(menu);
     menu.addEventListener("click", (event) => {
+      if (event.target.closest(".wecom-check-update")) {
+        event.preventDefault();
+        event.stopPropagation();
+        setThemeMenuOpen(false);
+        void checkForScriptUpdate(true);
+        return;
+      }
       const option = event.target.closest("button[data-theme-mode]");
       if (!option) return;
       event.preventDefault();
@@ -3741,6 +3778,175 @@
     bindThemeControls();
     syncThemeControls();
   }
+
+  /* ============================== 脚本更新 ============================== */
+
+  // 保留 @grant none，避免把依赖 window.require / Discourse 的桥接迁入沙箱。
+  // 发布时用 scripts/release.py 同步此版本、头部、meta.js 和 README。
+  const SCRIPT_VERSION = "0.5.10";
+  const SCRIPT_REPOSITORY_URL = "https://github.com/Blackwindow6/linuxdo-wecom-ui";
+  const SCRIPT_UPDATE_URL = "https://raw.githubusercontent.com/Blackwindow6/linuxdo-wecom-ui/main/linuxdo-wecom.meta.js";
+  const SCRIPT_DOWNLOAD_URL = "https://raw.githubusercontent.com/Blackwindow6/linuxdo-wecom-ui/main/linuxdo-wecom.user.js";
+  const UPDATE_CACHE_KEY = "linuxdo-wecom-update-cache";
+  const UPDATE_DISMISS_KEY = "linuxdo-wecom-update-dismiss";
+  const UPDATE_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000;
+  const UPDATE_RETRY_INTERVAL_MS = 15 * 60 * 1000;
+  const UPDATE_DISMISS_INTERVAL_MS = 24 * 60 * 60 * 1000;
+  const UPDATE_REQUEST_TIMEOUT_MS = 8000;
+  let updateCheckPromise = null;
+  const updateMemory = new Map();
+
+  function validScriptVersion(version) {
+    return typeof version === "string" && /^\d{1,9}(?:\.\d{1,9}){1,3}$/.test(version);
+  }
+
+  function compareScriptVersions(left, right) {
+    const a = left.split(".").map(Number);
+    const b = right.split(".").map(Number);
+    for (let i = 0; i < Math.max(a.length, b.length); i++) {
+      const difference = (a[i] || 0) - (b[i] || 0);
+      if (difference) return Math.sign(difference);
+    }
+    return 0;
+  }
+
+  function currentScriptVersion() {
+    // GM_info 在 Tampermonkey 的 @grant none 下仍可用；其他注入方式使用发布版本。
+    const version = typeof GM_info !== "undefined" ? GM_info?.script?.version : "";
+    return validScriptVersion(version) ? version : SCRIPT_VERSION;
+  }
+
+  function readUpdateState(key) {
+    try {
+      const value = JSON.parse(localStorage.getItem(key) || "null");
+      if (value && typeof value === "object" && !Array.isArray(value)) return value;
+    } catch { /* 存储不可用时仍能在本页检查、稍后提醒 */ }
+    return updateMemory.get(key) || {};
+  }
+
+  function writeUpdateState(key, value) {
+    updateMemory.set(key, value);
+    try { localStorage.setItem(key, JSON.stringify(value)); } catch { /* ignore */ }
+  }
+
+  function parseUpdateMetadata(text) {
+    const header = String(text).match(/^\s*\/\/ ==UserScript==\r?\n([\s\S]*?)^\/\/ ==\/UserScript==/m)?.[1];
+    if (!header) throw new Error("无效的脚本元数据");
+    const field = (name) => header.match(new RegExp(`^// @${name}\\s+(.+)$`, "m"))?.[1].trim();
+    const version = field("version");
+    if (field("name") !== "Linux DO · 企业微信 IM 外观" || field("namespace") !== "https://linux.do/" || !validScriptVersion(version)) {
+      throw new Error("脚本标识或版本号不匹配");
+    }
+    return version;
+  }
+
+  async function fetchLatestScriptVersion() {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), UPDATE_REQUEST_TIMEOUT_MS);
+    try {
+      // 仅读取元数据，不执行远程代码，也不携带站点 Cookie / Referer。
+      const response = await fetch(`${SCRIPT_UPDATE_URL}?t=${Date.now()}`, {
+        signal: controller.signal, credentials: "omit", cache: "no-store", referrerPolicy: "no-referrer"
+      });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      return parseUpdateMetadata(await response.text());
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+
+  function showUpdateNotice(state, latestVersion = "") {
+    if (!document.body || getViewMode() === "native" || otherThemeActive()) return;
+    let notice = document.querySelector(".wecom-update-notice");
+    if (!notice) {
+      notice = document.createElement("section");
+      notice.className = "wecom-update-notice";
+      notice.innerHTML =
+        `<div role="status" aria-live="polite" aria-atomic="true">` +
+        `<div class="wecom-update-notice-title">${ICONS.refresh}<span></span></div>` +
+        `<div class="wecom-update-notice-message"></div></div>` +
+        `<div class="wecom-update-notice-actions">` +
+        `<a class="wecom-update-install" target="_blank" rel="noopener noreferrer">立即更新</a>` +
+        `<a class="wecom-update-github" target="_blank" rel="noopener noreferrer">前往 GitHub</a>` +
+        `<button type="button" class="wecom-update-dismiss">关闭</button></div>`;
+      notice.querySelector(".wecom-update-install").href = SCRIPT_DOWNLOAD_URL;
+      notice.querySelector(".wecom-update-github").href = SCRIPT_REPOSITORY_URL;
+      notice.querySelector(".wecom-update-dismiss").addEventListener("click", () => {
+        if (notice.dataset.version) {
+          writeUpdateState(UPDATE_DISMISS_KEY, { version: notice.dataset.version, dismissedAt: Date.now() });
+        }
+        notice.remove();
+      });
+      notice.querySelector(".wecom-update-install").addEventListener("click", () => {
+        // 打开安装页不代表安装成功；不要自动刷新，以免丢失正在编辑的回复。
+        notice.querySelector(".wecom-update-notice-message").textContent = "请在脚本管理器中确认更新，完成后刷新此页面。若打开的是源码，请在油猴管理面板中检查更新。";
+      });
+      document.body.appendChild(notice);
+    }
+    const current = currentScriptVersion();
+    const messages = {
+      available: ["新版本已发布", `当前版本：${current}　最新版本：${latestVersion}\n点击更新，在脚本管理器中确认后刷新页面。`],
+      checking: ["正在检查脚本更新", `当前版本：${current}`],
+      latest: ["暂无新版本", `当前版本：${current}，未发现更高版本。`],
+      error: ["暂时无法检查更新", "网络或站点策略可能阻止了检查，请稍后重试；也可直接打开安装页或前往 GitHub。"]
+    };
+    const [title, message] = messages[state];
+    notice.dataset.version = state === "available" ? latestVersion : "";
+    notice.querySelector(".wecom-update-notice-title span").textContent = title;
+    notice.querySelector(".wecom-update-notice-message").textContent = message;
+    const install = notice.querySelector(".wecom-update-install");
+    install.hidden = state !== "available" && state !== "error";
+    install.textContent = state === "error" ? "打开安装页" : "立即更新";
+    notice.querySelector(".wecom-update-dismiss").textContent = state === "available" ? "稍后提醒" : "关闭";
+  }
+
+  async function checkForScriptUpdate(manual = false) {
+    if (!manual && (document.visibilityState === "hidden" || getViewMode() === "native" || otherThemeActive())) return;
+    const now = Date.now();
+    let cache = readUpdateState(UPDATE_CACHE_KEY);
+    const age = now - cache.checkedAt;
+    const cacheFresh = Number.isFinite(age) && age >= 0 && age < (cache.failed ? UPDATE_RETRY_INTERVAL_MS : UPDATE_CHECK_INTERVAL_MS);
+    if (manual) showUpdateNotice("checking");
+    if (manual || !cacheFresh || (!cache.failed && !validScriptVersion(cache.latestVersion))) {
+      if (!updateCheckPromise) {
+        updateCheckPromise = fetchLatestScriptVersion().then(
+          (latestVersion) => ({ checkedAt: Date.now(), latestVersion, failed: false }),
+          () => ({ checkedAt: Date.now(), failed: true })
+        ).then((result) => {
+          writeUpdateState(UPDATE_CACHE_KEY, result);
+          return result;
+        }).finally(() => { updateCheckPromise = null; });
+      }
+      cache = await updateCheckPromise;
+    }
+    if (cache.failed) {
+      if (manual) showUpdateNotice("error");
+      return;
+    }
+    if (compareScriptVersions(cache.latestVersion, currentScriptVersion()) <= 0) {
+      document.querySelector(".wecom-update-notice")?.remove();
+      if (manual) showUpdateNotice("latest");
+      return;
+    }
+    const dismissed = readUpdateState(UPDATE_DISMISS_KEY);
+    const dismissedAge = now - dismissed.dismissedAt;
+    if (!manual && dismissed.version === cache.latestVersion && dismissedAge >= 0 && dismissedAge < UPDATE_DISMISS_INTERVAL_MS) return;
+    // 已显示的提示不重复改写，避免覆盖“安装后刷新”提示。
+    if (manual || document.querySelector(".wecom-update-notice")?.dataset.version !== cache.latestVersion) {
+      showUpdateNotice("available", cache.latestVersion);
+    }
+  }
+
+  function scheduleScriptUpdateCheck() {
+    const check = () => { void checkForScriptUpdate(); };
+    setTimeout(check, 5000);
+    setInterval(check, UPDATE_RETRY_INTERVAL_MS);
+    document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState === "visible") check();
+    });
+  }
+
+  /* ============================== 脚本更新结束 ============================== */
 
   /** 企业微信工作台装饰项；仅消息和底部更多承接真实站点动作。 */
   const RAIL_DECO_ITEMS = [
@@ -8023,6 +8229,7 @@
     document.querySelector(".wecom-strip")?.remove();
     document.querySelector(".wecom-titlebar")?.remove();
     document.querySelector(".wecom-theme-menu")?.remove();
+    document.querySelector(".wecom-update-notice")?.remove();
     document.querySelector(".wecom-edit-dialog")?.remove();
   }
 
@@ -8135,7 +8342,7 @@
       });
     }
 
-    const WECOM_UI_SEL = ".wecom-list-panel, .wecom-chat-panel, .wecom-member-panel, .wecom-image-viewer, .wecom-edit-dialog, .wecom-rail, .wecom-strip, .wecom-titlebar, .wecom-mode-fab, .wecom-theme-menu, #linuxdo-wecom-theme";
+    const WECOM_UI_SEL = ".wecom-list-panel, .wecom-chat-panel, .wecom-member-panel, .wecom-image-viewer, .wecom-edit-dialog, .wecom-rail, .wecom-strip, .wecom-titlebar, .wecom-mode-fab, .wecom-theme-menu, .wecom-update-notice, #linuxdo-wecom-theme";
     const NATIVE_BRIDGE_SEL = "#reply-control, .autocomplete, .autocomplete-container, .d-editor-popup, [data-identifier='emoji-picker'], .tag-chooser";
     const observer = new MutationObserver((mutations) => {
       // 忽略我们自己面板内部的 DOM 变动，否则点开筛选会立刻触发 applyTheme 回写/闪断
@@ -8166,6 +8373,7 @@
     document.addEventListener("DOMContentLoaded", scheduleApply, { once: true });
     document.addEventListener("turbo:load", scheduleApply);
     document.addEventListener("page:changed", scheduleApply);
+    scheduleScriptUpdateCheck();
 
     // 在 window 捕获阶段截断站点快捷键，避免 #/@/Ctrl+K 等按键打开原生弹窗。
     if (!window.__wecomComposerShortcutGuardBound) {

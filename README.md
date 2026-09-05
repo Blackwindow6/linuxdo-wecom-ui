@@ -3,7 +3,7 @@
 把 [Linux DO](https://linux.do/) 的网页布局换成企业微信 5.x 桌面端风格，同时继续使用原站真实数据、路由、通知与回复能力。
 
 - 作者：**Richy**
-- 当前版本：**0.5.9**
+- 当前版本：**0.5.10**
 - 用户脚本：[`linuxdo-wecom.user.js`](linuxdo-wecom.user.js)
 - 许可证：MIT
 
@@ -85,6 +85,7 @@
 - 会话栏“+”可展开原站话题导航；聊天区右上角可切换回原生页面。
 - 支持浅色、深色和跟随系统三种颜色模式；配色参考企业微信官方深色模式，选择会保存在当前浏览器。
 - 检测到 IDEA、飞书或钉钉主题脚本时自动避让。同一时间只启用一套 Linux DO 外观脚本。
+- 自动检查脚本新版，右下角提示当前 / 最新版本，可直接打开更新安装页；同时支持脚本管理器自身的自动更新。
 
 
 ## 安装
@@ -101,6 +102,35 @@ https://github.com/Blackwindow6/linuxdo-wecom-ui/raw/main/linuxdo-wecom.user.js
 ```
 
 同一时间只启用一套 Linux DO 外观脚本。
+
+## 自动更新与新版提示
+
+从 **0.5.10** 起提供两条更新通道：
+
+- **脚本管理器自动更新**：通过 `@updateURL` 读取轻量的 `linuxdo-wecom.meta.js`，发现更高的 `@version` 后从 `@downloadURL` 获取脚本。请在 Tampermonkey / Violentmonkey 中启用脚本更新检查；检查周期和是否需要确认由管理器设置决定，并非推送后即时更新。
+- **页面内新版提示**：进入企业微信视图约 5 秒后检查；成功结果缓存 6 小时，失败后至少间隔 15 分钟再试。页面持续打开或重新切回标签页也会检查。发现新版时，右下角显示当前版本、最新版本和 **立即更新 / 前往 GitHub / 稍后提醒**。
+
+**立即更新**直接打开固定的 `.user.js` 安装地址，由脚本管理器接管并确认更新，无需手动复制代码。完成后刷新 Linux DO 页面生效；脚本不会自行覆盖安装内容、执行远程代码或强制刷新正在编辑的页面。若链接显示源码，请到脚本管理器中检查更新。
+
+“稍后提醒”会对该版本暂停提醒 24 小时，更新的版本仍可提示。需要立即重查时，点击左侧 **外观设置 → 检查脚本更新**，可绕过缓存与稍后提醒。
+
+> **老用户迁移**：0.5.9 及以前没有内置此提示。请先通过上面的 Raw 安装入口覆盖安装一次 0.5.10 或更高版本；之后即可使用这套更新机制。不要改动 `@name` / `@namespace`，以免管理器将其识别为另一个脚本。
+>
+> 仍保持 `@grant none`，以兼容原站 Discourse 交互。页面检查使用 `fetch` 读取 GitHub Raw 元数据，不发送 Cookie / Referer。若网络、CSP 或拦截插件阻止请求，自动检查静默失败，手动检查提供安装页和 GitHub 备用入口；不影响主题和脚本管理器自身的更新检查。
+
+### 开发者发布新版
+
+修改脚本后，在仓库目录执行（替换为更高的版本号）：
+
+```powershell
+python scripts/release.py 0.5.11
+python scripts/release.py --check
+node --test tests/update_check.test.cjs
+```
+
+发布助手会同步脚本头部 `@version`、运行时版本号、`linuxdo-wecom.meta.js` 和 README 的版本号。将这些文件**一起提交并推送到 `main`** 即可，无需创建 GitHub Release 或搭建更新服务。只改代码、不提高版本号，不会触发更新。GitHub Raw 可能存在短暂缓存延迟。
+
+首次发布本功能时，直接提交当前的 0.5.10 及配套元数据即可。`python scripts/release.py`（不带版本）可重新生成当前版本的配套文件；发布助手不会自动提交或推送。
 
 ## 操作说明
 
@@ -120,6 +150,7 @@ https://github.com/Blackwindow6/linuxdo-wecom-ui/raw/main/linuxdo-wecom.user.js
 | 顶部外链图标 | 切换到 Linux DO 原生视图 |
 | 左侧栏“深色模式/浅色模式” | 一键切换深色与浅色 |
 | 左侧栏“外观设置” | 选择浅色、深色或跟随系统 |
+| 外观设置 → 检查脚本更新 | 立即检查新版，打开脚本管理器的更新安装页 |
 | 底部输入区 | 直接输入并发送，Enter 发送、Shift+Enter 换行；可粘贴或拖拽图片 |
 | 输入区表情按钮 | 打开 Discourse 官方表情面板，并在当前光标位置插入站点表情代码 |
 | 输入区图片 / 附件按钮 | 选择图片并上传后插入消息 |
@@ -133,6 +164,8 @@ https://github.com/Blackwindow6/linuxdo-wecom-ui/raw/main/linuxdo-wecom.user.js
 ```text
 linuxdo-wecom-ui/
 ├─ linuxdo-wecom.user.js
+├─ linuxdo-wecom.meta.js
+├─ scripts/release.py
 ├─ snapshot/
 │  ├─ 帖子详情.png
 │  ├─ 回复框.png
